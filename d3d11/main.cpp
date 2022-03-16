@@ -5,7 +5,6 @@
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <assert.h>
-#include <wrl.h> // Microsoft::WRL::ComPtr
 
 //-----------------------------------------------------------------------------
 // Constant Buffer Struct
@@ -20,27 +19,27 @@ struct ConstantBuffer
 //-----------------------------------------------------------------------------
 // Variables
 //-----------------------------------------------------------------------------
-static HWND                                             g_hwnd;
-static Microsoft::WRL::ComPtr<ID3D11Device>             g_device;
-static Microsoft::WRL::ComPtr<ID3D11DeviceContext>      g_context;
-static Microsoft::WRL::ComPtr<IDXGISwapChain>           g_swapChain;
-static Microsoft::WRL::ComPtr<ID3D11Texture2D>          g_frameBuffer;
-static Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   g_frameBufferView;
-static Microsoft::WRL::ComPtr<ID3DBlob>                 g_vsBlob;
-static Microsoft::WRL::ComPtr<ID3D11VertexShader>       g_vertexShader;
-static Microsoft::WRL::ComPtr<ID3D11PixelShader>        g_pixelShader;
-static Microsoft::WRL::ComPtr<ID3D11InputLayout>        g_inputLayout;
-static Microsoft::WRL::ComPtr<ID3D11Buffer>             g_vertexBuffer;
-static Microsoft::WRL::ComPtr<ID3D11Buffer>             g_indexBuffer;
-static Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> g_textureView;
-static Microsoft::WRL::ComPtr<ID3D11SamplerState>       g_sampler;
-static Microsoft::WRL::ComPtr<ID3D11Buffer>             g_constantBuffer;
-static UINT                                             g_numVerts;
-static UINT                                             g_stride;
-static UINT                                             g_offset;
-static const int                                        g_width = 1024;
-static const int                                        g_height = 768;
-static ConstantBuffer                                   g_vertexOffset = { 0.0f, 0.0f };
+static HWND                      g_hwnd;
+static ID3D11Device*             g_device;
+static ID3D11DeviceContext*      g_context;
+static IDXGISwapChain*           g_swapChain;
+static ID3D11Texture2D*          g_frameBuffer;
+static ID3D11RenderTargetView*   g_frameBufferView;
+static ID3DBlob*                 g_vsBlob;
+static ID3D11VertexShader*       g_vertexShader;
+static ID3D11PixelShader*        g_pixelShader;
+static ID3D11InputLayout*        g_inputLayout;
+static ID3D11Buffer*             g_vertexBuffer;
+static ID3D11Buffer*             g_indexBuffer;
+static ID3D11ShaderResourceView* g_textureView;
+static ID3D11SamplerState*       g_sampler;
+static ID3D11Buffer*             g_constantBuffer;
+static UINT                      g_numVerts;
+static UINT                      g_stride;
+static UINT                      g_offset;
+static const int                 g_width = 1024;
+static const int                 g_height = 768;
+static ConstantBuffer            g_vertexOffset = { 0.0f, 0.0f };
 
 //-----------------------------------------------------------------------------
 // Vertex Data and Index Data
@@ -72,7 +71,7 @@ unsigned char image[] = {
 //-----------------------------------------------------------------------------
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
-int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int /*nShowCmd*/)
+int main()
 {
 
     //-----------------------------------------------------------------------------
@@ -83,35 +82,35 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         winClass.cbSize = sizeof(WNDCLASSEXW);
         winClass.style = CS_HREDRAW | CS_VREDRAW;
         winClass.lpfnWndProc = &WndProc;
-        winClass.hInstance = hInstance;
-        winClass.hIcon = LoadIconW(0, IDI_APPLICATION);
-        winClass.hCursor = LoadCursorW(0, IDC_ARROW);
+        winClass.hInstance = ::GetModuleHandle(nullptr);
+        winClass.hIcon = ::LoadIconW(0, IDI_APPLICATION);
+        winClass.hCursor = ::LoadCursorW(0, IDC_ARROW);
         winClass.lpszClassName = L"MyWindowClass";
-        winClass.hIconSm = LoadIconW(0, IDI_APPLICATION);
+        winClass.hIconSm = ::LoadIconW(0, IDI_APPLICATION);
 
-        if (!RegisterClassExW(&winClass)) {
-            MessageBoxA(0, "RegisterClassEx failed", "Fatal Error", MB_OK);
-            return GetLastError();
+        if (!::RegisterClassExW(&winClass)) {
+            ::MessageBoxA(0, "RegisterClassEx failed", "Fatal Error", MB_OK);
+            return ::GetLastError();
         }
 
         RECT initialRect = { 0, 0, g_width, g_height };
-        AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
+        ::AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
         LONG initialWidth = initialRect.right - initialRect.left;
         LONG initialHeight = initialRect.bottom - initialRect.top;
 
-        g_hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
+        g_hwnd = ::CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
             winClass.lpszClassName,
             L"Directx 11",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT, CW_USEDEFAULT,
             initialWidth,
             initialHeight,
-            0, 0, hInstance, 0);
+            0, 0, ::GetModuleHandle(nullptr), 0);
 
         if (!g_hwnd) 
         {
-            MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
-            return GetLastError();
+            ::MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
+            return ::GetLastError();
         }
     }
 
@@ -137,7 +136,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         sd.Flags = 0;
 
         // create device and front/back buffers, and swap chain and rendering context
-        HRESULT hResult = D3D11CreateDeviceAndSwapChain(
+        HRESULT hResult = ::D3D11CreateDeviceAndSwapChain(
             nullptr,
             D3D_DRIVER_TYPE_HARDWARE,
             nullptr,
@@ -146,10 +145,10 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
             0,
             D3D11_SDK_VERSION,
             &sd,
-            g_swapChain.GetAddressOf(),
-            g_device.GetAddressOf(),
+            &g_swapChain,
+            &g_device,
             nullptr,
-            g_context.GetAddressOf()
+            &g_context
         );
         assert(SUCCEEDED(hResult));
     }
@@ -158,10 +157,10 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
     // Create Framebuffer Render Target
     //-----------------------------------------------------------------------------
     {
-        HRESULT hResult = g_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)g_frameBuffer.GetAddressOf());
+        HRESULT hResult = g_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&g_frameBuffer);
         assert(SUCCEEDED(hResult));
 
-        hResult = g_device->CreateRenderTargetView(g_frameBuffer.Get(), 0, g_frameBufferView.GetAddressOf());
+        hResult = g_device->CreateRenderTargetView(g_frameBuffer, 0, &g_frameBufferView);
         assert(SUCCEEDED(hResult));
     }
 
@@ -169,13 +168,13 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
     // Create Vertex Shader
     //-----------------------------------------------------------------------------
     {
-        Microsoft::WRL::ComPtr<ID3DBlob> shaderCompileErrorsBlob;
-        HRESULT hResult = D3DCompileFromFile(L"../shaders.hlsl", 
-            nullptr, nullptr, "vs_main", "vs_5_0", 0, 0, g_vsBlob.GetAddressOf(), shaderCompileErrorsBlob.GetAddressOf());
+        ID3DBlob* shaderCompileErrorsBlob;
+        HRESULT hResult = ::D3DCompileFromFile(L"../shaders.hlsl", 
+            nullptr, nullptr, "vs_main", "vs_5_0", 0, 0, &g_vsBlob, &shaderCompileErrorsBlob);
         if (FAILED(hResult))
         {
             const char* errorString = nullptr;
-            if (hResult == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
+            if (hResult == ::HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
                 errorString = "Could not compile shader; file not found";
             else if (shaderCompileErrorsBlob)
                 errorString = (const char*)shaderCompileErrorsBlob->GetBufferPointer();
@@ -184,33 +183,39 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         }
 
         hResult = g_device->CreateVertexShader(g_vsBlob->GetBufferPointer(), 
-            g_vsBlob->GetBufferSize(), nullptr, g_vertexShader.GetAddressOf());
+            g_vsBlob->GetBufferSize(), nullptr, &g_vertexShader);
         assert(SUCCEEDED(hResult));
+        if(shaderCompileErrorsBlob)
+            shaderCompileErrorsBlob->Release();
     }
 
     //-----------------------------------------------------------------------------
     // Create Pixel Shader
     //-----------------------------------------------------------------------------
     {
-        Microsoft::WRL::ComPtr<ID3DBlob> psBlob;
-        Microsoft::WRL::ComPtr<ID3DBlob> shaderCompileErrorsBlob;
-        HRESULT hResult = D3DCompileFromFile(L"../shaders.hlsl", 
-            nullptr, nullptr, "ps_main", "ps_5_0", 0, 0, psBlob.GetAddressOf(), shaderCompileErrorsBlob.GetAddressOf());
+        ID3DBlob* psBlob;
+        ID3DBlob* shaderCompileErrorsBlob;
+        HRESULT hResult = ::D3DCompileFromFile(L"../shaders.hlsl", 
+            nullptr, nullptr, "ps_main", "ps_5_0", 0, 0, &psBlob, &shaderCompileErrorsBlob);
         if (FAILED(hResult))
         {
             const char* errorString = nullptr;
-            if (hResult == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
+            if (hResult == ::HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
                 errorString = "Could not compile shader; file not found";
             else if (shaderCompileErrorsBlob)
                 errorString = (const char*)shaderCompileErrorsBlob->GetBufferPointer();
 
-            MessageBoxA(0, errorString, "Shader Compiler Error", MB_ICONERROR | MB_OK);
+            ::MessageBoxA(0, errorString, "Shader Compiler Error", MB_ICONERROR | MB_OK);
             return 1;
         }
 
         hResult = g_device->CreatePixelShader(psBlob->GetBufferPointer(), 
-            psBlob->GetBufferSize(), nullptr, g_pixelShader.GetAddressOf());
+            psBlob->GetBufferSize(), nullptr, &g_pixelShader);
         assert(SUCCEEDED(hResult));
+
+        psBlob->Release();
+        if(shaderCompileErrorsBlob)
+            shaderCompileErrorsBlob->Release();
     }
 
     //-----------------------------------------------------------------------------
@@ -224,7 +229,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         };
 
         HRESULT hResult = g_device->CreateInputLayout(inputElementDesc, ARRAYSIZE(inputElementDesc), 
-            g_vsBlob->GetBufferPointer(), g_vsBlob->GetBufferSize(), g_inputLayout.GetAddressOf());
+            g_vsBlob->GetBufferPointer(), g_vsBlob->GetBufferSize(), &g_inputLayout);
         assert(SUCCEEDED(hResult));
     }
 
@@ -244,7 +249,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         D3D11_SUBRESOURCE_DATA vertexSubresourceData = { g_vertexData };
 
         HRESULT hResult = g_device->CreateBuffer(&vertexBufferDesc, 
-            &vertexSubresourceData, g_vertexBuffer.GetAddressOf());
+            &vertexSubresourceData, &g_vertexBuffer);
         assert(SUCCEEDED(hResult));
     }
 
@@ -266,7 +271,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         InitData.pSysMem = g_indices;
 
         // Create the buffer with the device.
-        g_device->CreateBuffer(&bufferDesc, &InitData, g_indexBuffer.GetAddressOf());
+        g_device->CreateBuffer(&bufferDesc, &InitData, &g_indexBuffer);
     }
 
     //-----------------------------------------------------------------------------
@@ -277,7 +282,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
 
 
-        g_device->CreateSamplerState(&samplerDesc, g_sampler.GetAddressOf());
+        g_device->CreateSamplerState(&samplerDesc, &g_sampler);
     }
 
     //-----------------------------------------------------------------------------
@@ -285,7 +290,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
     //-----------------------------------------------------------------------------
     {
         
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        ID3D11Texture2D* texture;
 
         D3D11_TEXTURE2D_DESC textureDesc = {};
         textureDesc.Width = 2;
@@ -300,9 +305,9 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         textureDesc.CPUAccessFlags = 0;
         textureDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
-        g_device->CreateTexture2D(&textureDesc, nullptr, texture.GetAddressOf());
+        g_device->CreateTexture2D(&textureDesc, nullptr, &texture);
 
-        g_context->UpdateSubresource(texture.Get(), 0u, nullptr, image, 8, 0u);
+        g_context->UpdateSubresource(texture, 0u, nullptr, image, 8, 0u);
 
         // create the resource view on the texture
         D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -311,10 +316,9 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         srvDesc.Texture2D.MostDetailedMip = 0;
         srvDesc.Texture2D.MipLevels = 1;
 
-
-        g_device->CreateShaderResourceView(texture.Get(), &srvDesc, g_textureView.GetAddressOf());
-
-        g_context->GenerateMips(g_textureView.Get());
+        g_device->CreateShaderResourceView(texture, &srvDesc, &g_textureView);
+        g_context->GenerateMips(g_textureView);
+        texture->Release();
     }
 
     //-----------------------------------------------------------------------------
@@ -331,7 +335,7 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
 
         D3D11_SUBRESOURCE_DATA csd = {};
         csd.pSysMem = &g_vertexOffset;
-        g_device->CreateBuffer(&cbd, &csd, g_constantBuffer.GetAddressOf());
+        g_device->CreateBuffer(&cbd, &csd, &g_constantBuffer);
 
     }
 
@@ -343,53 +347,53 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
     {
         // poll for and process events
         MSG msg = {};
-        while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE))
+        while (::PeekMessageW(&msg, 0, 0, 0, PM_REMOVE))
         {
             if (msg.message == WM_QUIT)
                 isRunning = false;
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            ::TranslateMessage(&msg);
+            ::DispatchMessageW(&msg);
         }
 
         // update constant buffer (every frame)
         D3D11_MAPPED_SUBRESOURCE mappedSubresource;
-        g_context->Map(g_constantBuffer.Get(), 0u, D3D11_MAP_WRITE_DISCARD, 0u, &mappedSubresource);
+        g_context->Map(g_constantBuffer, 0u, D3D11_MAP_WRITE_DISCARD, 0u, &mappedSubresource);
         memcpy(mappedSubresource.pData, &g_vertexOffset, sizeof(ConstantBuffer));
-        g_context->Unmap(g_constantBuffer.Get(), 0u);
+        g_context->Unmap(g_constantBuffer, 0u);
 
         // clear render target
         float backgroundColor[] = { 0.0f, 0.0f, 0.0f, 1.0f };
-        g_context->ClearRenderTargetView(g_frameBufferView.Get(), backgroundColor);
+        g_context->ClearRenderTargetView(g_frameBufferView, backgroundColor);
 
         // set viewport
         RECT winRect;
-        GetClientRect(g_hwnd, &winRect);
+        ::GetClientRect(g_hwnd, &winRect);
         D3D11_VIEWPORT viewport = { 0.0f, 0.0f, (FLOAT)(winRect.right - winRect.left), (FLOAT)(winRect.bottom - winRect.top), 0.0f, 1.0f };
         g_context->RSSetViewports(1, &viewport);
 
         // bind frame buffer
-        g_context->OMSetRenderTargets(1, g_frameBufferView.GetAddressOf(), nullptr);
+        g_context->OMSetRenderTargets(1, &g_frameBufferView, nullptr);
 
         // bind constant buffer
-        g_context->VSSetConstantBuffers(0u, 1u, g_constantBuffer.GetAddressOf());
+        g_context->VSSetConstantBuffers(0u, 1u, &g_constantBuffer);
 
         // bind primitive topology
         g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         // bind vertex layout
-        g_context->IASetInputLayout(g_inputLayout.Get());
+        g_context->IASetInputLayout(g_inputLayout);
 
         // bind shaders
-        g_context->VSSetShader(g_vertexShader.Get(), nullptr, 0);
-        g_context->PSSetShader(g_pixelShader.Get(), nullptr, 0);
+        g_context->VSSetShader(g_vertexShader, nullptr, 0);
+        g_context->PSSetShader(g_pixelShader, nullptr, 0);
 
         // bind index and vertex buffers
-        g_context->IASetIndexBuffer(g_indexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0u);
-        g_context->IASetVertexBuffers(0, 1, g_vertexBuffer.GetAddressOf(), &g_stride, &g_offset);
+        g_context->IASetIndexBuffer(g_indexBuffer, DXGI_FORMAT_R16_UINT, 0u);
+        g_context->IASetVertexBuffers(0, 1, &g_vertexBuffer, &g_stride, &g_offset);
 
         // bind sampler and texture
-        g_context->PSSetSamplers(0u, 1, g_sampler.GetAddressOf());
-        g_context->PSSetShaderResources(0u, 1, g_textureView.GetAddressOf());
+        g_context->PSSetSamplers(0u, 1, &g_sampler);
+        g_context->PSSetShaderResources(0u, 1, &g_textureView);
 
         // draw
         g_context->DrawIndexed(6, 0u, 0u);
@@ -397,6 +401,25 @@ int main(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, 
         // swap front and back buffers
         g_swapChain->Present(1, 0);
     }
+
+    //-----------------------------------------------------------------------------
+    // cleanup
+    //-----------------------------------------------------------------------------
+
+    g_swapChain->Release();
+    g_frameBuffer->Release();
+    g_frameBufferView->Release();
+    g_vsBlob->Release();
+    g_vertexShader->Release();
+    g_pixelShader->Release();
+    g_inputLayout->Release();
+    g_vertexBuffer->Release();
+    g_indexBuffer->Release();
+    g_textureView->Release();
+    g_sampler->Release();
+    g_constantBuffer->Release();
+    g_context->Release();
+    g_device->Release();
 
 }
 
@@ -408,7 +431,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     case WM_KEYDOWN:
     {
         if (wparam == VK_ESCAPE)
-            DestroyWindow(hwnd);
+            ::DestroyWindow(hwnd);
         if (wparam == VK_UP)
             g_vertexOffset.y_offset += 0.01f;
         if (wparam == VK_DOWN)
@@ -421,11 +444,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     }
     case WM_DESTROY:
     {
-        PostQuitMessage(0);
+        ::PostQuitMessage(0);
         break;
     }
     default:
-        result = DefWindowProcW(hwnd, msg, wparam, lparam);
+        result = ::DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     return result;
 }
