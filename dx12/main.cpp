@@ -73,10 +73,10 @@ static D3D12_CPU_DESCRIPTOR_HANDLE  g_textureHandle;
 static const int                    g_width = 1024;
 static const int                    g_height = 768;
 static ConstantBuffer               g_vertexOffset = { 0.0f, 0.0f };
-static unsigned                     g_rtvHeapSize = 100u; 
-static unsigned                     g_dsvHeapSize = 100u;
-static unsigned                     g_cbvHeapSize = 100u;
-static unsigned                     g_srvHeapSize = 100u;
+static unsigned                     g_rtvHeapSize = 10u; 
+static unsigned                     g_dsvHeapSize = 10u;
+static unsigned                     g_cbvHeapSize = 10u;
+static unsigned                     g_srvHeapSize = 10u;
 
 //-----------------------------------------------------------------------------
 // Vertex Data and Index Data
