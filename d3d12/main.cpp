@@ -38,9 +38,6 @@ static ID3D12Device*                g_device;
 static ID3D12DescriptorHeap*        g_rtvDescHeap;
 static ID3D12DescriptorHeap*        g_dsvDescHeap;
 static ID3D12DescriptorHeap*        g_srvDescHeap;
-static ID3D12DescriptorHeap*        g_rtvDescHeap;
-static ID3D12DescriptorHeap*        g_dsvDescHeap;
-static ID3D12DescriptorHeap*        g_srvDescHeap;
 static ID3D12CommandQueue*          g_commandQueue;
 static ID3D12GraphicsCommandList*   g_commandList;
 static ID3D12Fence*                 g_fence;
@@ -54,7 +51,6 @@ static HANDLE                       g_swapChainWaitableObject;
 static ID3D12Resource*              g_depthStencilBuffer;
 static DXGI_FORMAT                  g_depthStencilFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 static size_t                       g_uploadHeapSize = 1024u*1024u*4u;
-static size_t                       g_uniformHeapSize = 65536u*100u;
 static ID3D12Resource*              g_uploadHeap;
 static ID3D12Heap*                  g_uniformHeap;
 static ID3DBlob*                    g_vsBlob;
@@ -63,10 +59,15 @@ static ID3D12RootSignature*         g_rootSignature;
 static ID3D12PipelineState*         g_pipelineState;
 static ID3D12Resource*              g_vertexBuffer;
 static ID3D12Resource*              g_indexBuffer;
+static ID3D12Resource*              g_uniformBuffer;
 static D3D12_INDEX_BUFFER_VIEW      g_indexBufferView;
 static D3D12_VERTEX_BUFFER_VIEW     g_vertexBufferView;
 static D3D12_VIEWPORT               g_viewport;
 static D3D12_RECT                   g_surfaceSize;
+static unsigned char*               g_mapping;
+static unsigned                     g_rtvDescriptorSize; // caching descriptor size 
+static unsigned                     g_dsvDescriptorSize; // caching descriptor size
+static unsigned                     g_cbvDescriptorSize; // caching descriptor size
 
 // static ID3D11Device*             g_device;
 // static ID3D11DeviceContext*      g_context;
@@ -104,7 +105,7 @@ static const float g_vertexData[] = { // x, y, u, v
       0.5f,  0.5f, 1.0f, 0.0f,
 };
 
-static const unsigned short g_indices[] = { 
+static const unsigned g_indices[] = { 
     2, 1, 0,
     3, 2, 0
 };
@@ -265,6 +266,12 @@ int main()
     g_fenceEvent = ::CreateEvent(nullptr, false, false, nullptr);
     assert(g_fenceEvent != nullptr);
 
+    // cache descriptor sizes (hardware dependent)
+    g_rtvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    g_dsvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    g_cbvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+
     //-----------------------------------------------------------------------------
     // Create Swapchain
     //-----------------------------------------------------------------------------
@@ -379,7 +386,7 @@ int main()
 
     {
         D3D12_HEAP_DESC desc;
-        desc.SizeInBytes = g_uniformHeapSize;
+        desc.SizeInBytes = 65536u*3;
         desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
         desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
         desc.Properties.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -508,6 +515,79 @@ int main()
     }
 
     //-----------------------------------------------------------------------------
+    // Create Pipeline State Object
+    //-----------------------------------------------------------------------------
+    {
+        D3D12_SHADER_BYTECODE vsBytecode;
+        vsBytecode.pShaderBytecode = g_vsBlob->GetBufferPointer();
+        vsBytecode.BytecodeLength = g_vsBlob->GetBufferSize();
+        
+        D3D12_SHADER_BYTECODE psBytecode;
+        psBytecode.pShaderBytecode = g_psBlob->GetBufferPointer();
+        psBytecode.BytecodeLength = g_psBlob->GetBufferSize();
+        
+        D3D12_RASTERIZER_DESC rasterDesc;
+        rasterDesc.FillMode = D3D12_FILL_MODE_SOLID;
+        rasterDesc.CullMode = D3D12_CULL_MODE_BACK;
+        rasterDesc.FrontCounterClockwise = FALSE;
+        // rasterDesc.DepthBias = spec.depthBias;
+        // rasterDesc.DepthBiasClamp = spec.clamp;
+        // rasterDesc.SlopeScaledDepthBias = spec.slopeBias;
+        rasterDesc.DepthClipEnable = TRUE;
+        rasterDesc.MultisampleEnable = FALSE;
+        rasterDesc.AntialiasedLineEnable = FALSE;
+        rasterDesc.ForcedSampleCount = 0;
+        rasterDesc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+        D3D12_BLEND_DESC blendDesc;
+        blendDesc.AlphaToCoverageEnable = FALSE;
+        blendDesc.IndependentBlendEnable = FALSE;
+        const D3D12_RENDER_TARGET_BLEND_DESC defaultRenderTargetBlendDesc = {
+            TRUE,
+            FALSE,
+            D3D12_BLEND_SRC_ALPHA,
+            D3D12_BLEND_INV_SRC_ALPHA,
+            D3D12_BLEND_OP_ADD,
+            D3D12_BLEND_ONE,
+            D3D12_BLEND_INV_SRC_ALPHA,
+            D3D12_BLEND_OP_ADD,
+            D3D12_LOGIC_OP_NOOP,
+            D3D12_COLOR_WRITE_ENABLE_ALL,
+        };
+        for (unsigned i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+            blendDesc.RenderTarget[i] = defaultRenderTargetBlendDesc;
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+        D3D12_INPUT_LAYOUT_DESC layoutDesc{};
+        layoutDesc.NumElements = 2;
+        D3D12_INPUT_ELEMENT_DESC inputelements[]=
+        {
+            {"Position", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TexCoord", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+        layoutDesc.pInputElementDescs = inputelements;
+        psoDesc.InputLayout = layoutDesc;
+        psoDesc.pRootSignature = g_rootSignature;
+        psoDesc.PS = psBytecode;
+        psoDesc.VS = vsBytecode;
+        psoDesc.RasterizerState = rasterDesc;
+        psoDesc.BlendState = blendDesc;
+        psoDesc.DepthStencilState.DepthEnable = true;
+        psoDesc.DepthStencilState.StencilEnable = false;
+
+        psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        psoDesc.SampleDesc.Count = 1;
+        psoDesc.DSVFormat = g_depthStencilFormat;
+
+        S_D3D12(g_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_pipelineState)));
+    }
+
+    //-----------------------------------------------------------------------------
     // Create Vertex Buffer
     //-----------------------------------------------------------------------------
     {
@@ -569,28 +649,16 @@ int main()
         // wait to destroy staging buffer
         g_fence->SetEventOnCompletion(fenceValue, g_fenceEvent);
         ::WaitForSingleObject(g_fenceEvent, INFINITE);
+
+        g_vertexBufferView.BufferLocation = g_vertexBuffer->GetGPUVirtualAddress();
+        g_vertexBufferView.SizeInBytes = sizeof(g_vertexData);
+        g_vertexBufferView.StrideInBytes = sizeof(float)*4;
     }
 
     //-----------------------------------------------------------------------------
     // Create Index Buffer
     //-----------------------------------------------------------------------------
     {
-        // // Fill in a buffer description.
-        // D3D11_BUFFER_DESC bufferDesc = {};
-        // bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-        // bufferDesc.ByteWidth = UINT(sizeof(unsigned short) * 6);
-        // bufferDesc.StructureByteStride = sizeof(unsigned short);
-        // bufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-        // bufferDesc.CPUAccessFlags = 0u;
-        // bufferDesc.MiscFlags = 0u;
-
-        // // Define the resource data.
-        // D3D11_SUBRESOURCE_DATA InitData = {};
-        // InitData.pSysMem = g_indices;
-
-        // // Create the buffer with the device.
-        // g_device->CreateBuffer(&bufferDesc, &InitData, &g_indexBuffer);
-
         assert(sizeof(g_vertexData) < g_uploadHeapSize && "Upload heap size is too small");
 
         //-----------------------------------------------------------------------------
@@ -604,7 +672,7 @@ int main()
 
         D3D12_RESOURCE_DESC vertexBufferResourceDesc{};
         vertexBufferResourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        vertexBufferResourceDesc.Width = UINT(sizeof(unsigned short) * 6);
+        vertexBufferResourceDesc.Width = UINT(sizeof(unsigned) * 6);
         vertexBufferResourceDesc.Height = 1;
         vertexBufferResourceDesc.DepthOrArraySize = 1;
         vertexBufferResourceDesc.MipLevels = 1;
@@ -648,71 +716,55 @@ int main()
         // wait to destroy staging buffer
         g_fence->SetEventOnCompletion(fenceValue, g_fenceEvent);
         ::WaitForSingleObject(g_fenceEvent, INFINITE);
+
+        g_indexBufferView.BufferLocation = g_indexBuffer->GetGPUVirtualAddress();
+        g_indexBufferView.SizeInBytes = sizeof(g_indices);
+        g_indexBufferView.Format = DXGI_FORMAT_R32_UINT;
     }
 
     //-----------------------------------------------------------------------------
-    // Create Sampler
+    // Create Uniform Buffer
     //-----------------------------------------------------------------------------
     {
-        // D3D11_SAMPLER_DESC samplerDesc = CD3D11_SAMPLER_DESC{ CD3D11_DEFAULT{} };
-        // samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        // temporary solution
+        D3D12_RESOURCE_DESC uboResourceDesc{};
+        uboResourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        uboResourceDesc.Alignment = 0;
+        uboResourceDesc.Width = (sizeof(ConstantBuffer) + 255) & ~255;
+        uboResourceDesc.Width*=S_FRAME_COUNT;
+        uboResourceDesc.Height = 1;
+        uboResourceDesc.DepthOrArraySize = 1;
+        uboResourceDesc.MipLevels = 1;
+        uboResourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uboResourceDesc.SampleDesc.Count = 1;
+        uboResourceDesc.SampleDesc.Quality = 0;
+        uboResourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        uboResourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        heapProps.CreationNodeMask = 1;
+        heapProps.VisibleNodeMask = 1;
 
-        // g_device->CreateSamplerState(&samplerDesc, &g_sampler);
-    }
+        S_D3D12(g_device->CreatePlacedResource(g_uniformHeap, 0, &uboResourceDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&g_uniformBuffer)));
 
-    //-----------------------------------------------------------------------------
-    // Create Texture
-    //-----------------------------------------------------------------------------
-    {
-        
-        // ID3D11Texture2D* texture;
+        D3D12_RANGE readRange{};
+        readRange.Begin = 0;
+        readRange.End = 0;
 
-        // D3D11_TEXTURE2D_DESC textureDesc = {};
-        // textureDesc.Width = 2;
-        // textureDesc.Height = 2;
-        // textureDesc.MipLevels = 0;
-        // textureDesc.ArraySize = 1;
-        // textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        // textureDesc.SampleDesc.Count = 1;
-        // textureDesc.SampleDesc.Quality = 0;
-        // textureDesc.Usage = D3D11_USAGE_DEFAULT;
-        // textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-        // textureDesc.CPUAccessFlags = 0;
-        // textureDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+        // leaving this mapped
+        S_D3D12(g_uniformBuffer->Map(0, &readRange,(void**)(&g_mapping)));
 
-        // g_device->CreateTexture2D(&textureDesc, nullptr, &texture);
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+        cbvDesc.BufferLocation = g_uniformBuffer->GetGPUVirtualAddress();
+        cbvDesc.SizeInBytes = (sizeof(ConstantBuffer) + 255) & ~255; // CB size is required to be 256-byte aligned.
 
-        // g_context->UpdateSubresource(texture, 0u, nullptr, image, 8, 0u);
+        D3D12_CPU_DESCRIPTOR_HANDLE cbvHandle(g_srvDescHeap->GetCPUDescriptorHandleForHeapStart());
+        cbvHandle.ptr = cbvHandle.ptr + g_cbvDescriptorSize * 0;
 
-        // // create the resource view on the texture
-        // D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        // srvDesc.Format = textureDesc.Format;
-        // srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        // srvDesc.Texture2D.MostDetailedMip = 0;
-        // srvDesc.Texture2D.MipLevels = 1;
-
-        // g_device->CreateShaderResourceView(texture, &srvDesc, &g_textureView);
-        // g_context->GenerateMips(g_textureView);
-        // texture->Release();
-    }
-
-    //-----------------------------------------------------------------------------
-    // Create Constant Buffer
-    //-----------------------------------------------------------------------------
-    {
-        // D3D11_BUFFER_DESC cbd;
-        // cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        // cbd.Usage = D3D11_USAGE_DYNAMIC;
-        // cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        // cbd.MiscFlags = 0u;
-        // cbd.ByteWidth = sizeof(ConstantBuffer);
-        // cbd.StructureByteStride = 0u;
-
-        // D3D11_SUBRESOURCE_DATA csd = {};
-        // csd.pSysMem = &g_vertexOffset;
-        // g_device->CreateBuffer(&cbd, &csd, &g_constantBuffer);
-
+        g_device->CreateConstantBufferView(&cbvDesc, cbvHandle);
     }
 
     //-----------------------------------------------------------------------------
@@ -730,6 +782,11 @@ int main()
             ::TranslateMessage(&msg);
             ::DispatchMessageW(&msg);
         }
+
+        g_surfaceSize.right = g_width;
+        g_surfaceSize.bottom = g_height;
+        g_viewport.Width = g_width;
+        g_viewport.Height = g_height;
 
         //-----------------------------------------------------------------------------
         // wait for next frame
@@ -758,7 +815,11 @@ int main()
         // begin main pass
         //-----------------------------------------------------------------------------
         static float clear_color[4] = { 60.0f/255.0f, 60.0f/255.0f, 60.0f/255.0f, 1.0f };
-        unsigned backBufferIdx = g_swapChain->GetCurrentBackBufferIndex();   
+        unsigned backBufferIdx = g_swapChain->GetCurrentBackBufferIndex();  
+
+        unsigned char* dst = g_mapping;
+        dst+=(g_frameIndex % S_FRAME_COUNT)*(sizeof(ConstantBuffer) + 255) & ~255;
+        memcpy(dst, &g_vertexOffset, sizeof(ConstantBuffer)); 
 
         // transition to render target
         D3D12_RESOURCE_BARRIER toTargetBarrier = {};
@@ -775,6 +836,18 @@ int main()
         g_commandList->RSSetViewports(1, &g_viewport);
         g_commandList->RSSetScissorRects(1, &g_surfaceSize);
         g_commandList->SetDescriptorHeaps(1, &g_srvDescHeap);
+
+        g_commandList->SetPipelineState(g_pipelineState);
+        g_commandList->SetGraphicsRootSignature(g_rootSignature);
+        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle(g_srvDescHeap->GetGPUDescriptorHandleForHeapStart());
+        srvHandle.ptr = srvHandle.ptr + g_cbvDescriptorSize * 0;
+        g_commandList->SetGraphicsRootDescriptorTable(0, srvHandle);  
+
+        g_commandList->IASetVertexBuffers(0, 1, &g_vertexBufferView);
+        g_commandList->IASetIndexBuffer(&g_indexBufferView);
+        g_commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
 
         //-----------------------------------------------------------------------------
         // end main pass
@@ -804,10 +877,10 @@ int main()
             Sleep(20);
         }
         else presentFlags = 0;
-        size_t fenceValue = g_fenceLastSignaledValue + 1;
-        g_commandQueue->Signal(g_fence, fenceValue);
-        g_fenceLastSignaledValue = fenceValue;
-        currentFrameCtx->fenceValue = fenceValue;   
+        size_t nfenceValue = g_fenceLastSignaledValue + 1;
+        g_commandQueue->Signal(g_fence, nfenceValue);
+        g_fenceLastSignaledValue = nfenceValue;
+        currentFrameCtx->fenceValue = nfenceValue;   
 
     }
 
