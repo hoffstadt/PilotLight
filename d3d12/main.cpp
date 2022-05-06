@@ -60,6 +60,7 @@ static ID3D12PipelineState*         g_pipelineState;
 static ID3D12Resource*              g_vertexBuffer;
 static ID3D12Resource*              g_indexBuffer;
 static ID3D12Resource*              g_uniformBuffer;
+static ID3D12Resource*              g_textureBuffer;
 static D3D12_INDEX_BUFFER_VIEW      g_indexBufferView;
 static D3D12_VERTEX_BUFFER_VIEW     g_vertexBufferView;
 static D3D12_VIEWPORT               g_viewport;
@@ -68,32 +69,14 @@ static unsigned char*               g_mapping;
 static unsigned                     g_rtvDescriptorSize; // caching descriptor size 
 static unsigned                     g_dsvDescriptorSize; // caching descriptor size
 static unsigned                     g_cbvDescriptorSize; // caching descriptor size
-
-// static ID3D11Device*             g_device;
-// static ID3D11DeviceContext*      g_context;
-// static IDXGISwapChain*           g_swapChain;
-// static ID3D11Texture2D*          g_frameBuffer;
-// static ID3D11RenderTargetView*   g_frameBufferView;
-// static ID3DBlob*                 g_vsBlob;
-// static ID3D11VertexShader*       g_vertexShader;
-// static ID3D11PixelShader*        g_pixelShader;
-// static ID3D11InputLayout*        g_inputLayout;
-// static ID3D11Buffer*             g_vertexBuffer;
-// static ID3D11Buffer*             g_indexBuffer;
-// static ID3D11ShaderResourceView* g_textureView;
-// static ID3D11SamplerState*       g_sampler;
-// static ID3D11Buffer*             g_constantBuffer;
-static UINT                      g_numVerts;
-static UINT                      g_stride;
-static UINT                      g_offset;
-static const int                 g_width = 1024;
-static const int                 g_height = 768;
-static ConstantBuffer            g_vertexOffset = { 0.0f, 0.0f };
-
-static unsigned g_rtvHeapSize = 100u; 
-static unsigned g_dsvHeapSize = 100u;
-static unsigned g_cbvHeapSize = 100u;
-static unsigned g_srvHeapSize = 100u;
+static D3D12_CPU_DESCRIPTOR_HANDLE  g_textureHandle;
+static const int                    g_width = 1024;
+static const int                    g_height = 768;
+static ConstantBuffer               g_vertexOffset = { 0.0f, 0.0f };
+static unsigned                     g_rtvHeapSize = 100u; 
+static unsigned                     g_dsvHeapSize = 100u;
+static unsigned                     g_cbvHeapSize = 100u;
+static unsigned                     g_srvHeapSize = 100u;
 
 //-----------------------------------------------------------------------------
 // Vertex Data and Index Data
@@ -469,7 +452,7 @@ int main()
         sampler.RegisterSpace = 0;
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        D3D12_DESCRIPTOR_RANGE1 ranges[3]{};
+        D3D12_DESCRIPTOR_RANGE1 ranges[2]{};
         ranges[0].BaseShaderRegister = 0;
         ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
         ranges[0].NumDescriptors = 1;
@@ -478,18 +461,11 @@ int main()
         ranges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
 
         ranges[1].BaseShaderRegister = 0;
-        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         ranges[1].NumDescriptors = 1;
         ranges[1].RegisterSpace = 0;
-        ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        ranges[1].OffsetInDescriptorsFromTableStart =  D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
         ranges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
-
-        ranges[2].BaseShaderRegister = 0;
-        ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        ranges[2].NumDescriptors = 1;
-        ranges[2].RegisterSpace = 0;
-        ranges[2].OffsetInDescriptorsFromTableStart =  D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        ranges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
 
         D3D12_ROOT_PARAMETER1 rootParameters[2]{};
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -499,7 +475,7 @@ int main()
 
         rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        rootParameters[1].DescriptorTable.NumDescriptorRanges = 2;
+        rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
         rootParameters[1].DescriptorTable.pDescriptorRanges = &ranges[1];
 
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc{};
@@ -768,6 +744,123 @@ int main()
     }
 
     //-----------------------------------------------------------------------------
+    // Create Texture
+    //-----------------------------------------------------------------------------
+    {
+        //-----------------------------------------------------------------------------
+        // Final resource info
+        //-----------------------------------------------------------------------------
+
+        D3D12_RESOURCE_DESC textureDesc{};
+        textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        textureDesc.Width = 2;
+        textureDesc.Height = 2;
+        textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        textureDesc.DepthOrArraySize = 1;
+        textureDesc.MipLevels = 1;
+        textureDesc.SampleDesc.Count = 1;
+        textureDesc.SampleDesc.Quality = 0;
+        textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        textureDesc.Alignment = 0;
+
+        D3D12_HEAP_PROPERTIES defaultProperties;
+        defaultProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        defaultProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        defaultProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        defaultProperties.CreationNodeMask = 0;
+        defaultProperties.VisibleNodeMask = 0;
+
+        g_device->CreateCommittedResource(&defaultProperties, D3D12_HEAP_FLAG_NONE, &textureDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_textureBuffer));
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC shaderResourceViewDesc = {};
+        shaderResourceViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        shaderResourceViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        shaderResourceViewDesc.Format = textureDesc.Format;
+        shaderResourceViewDesc.Texture2D.MipLevels = textureDesc.MipLevels;
+
+        g_textureHandle = g_srvDescHeap->GetCPUDescriptorHandleForHeapStart();
+        g_textureHandle.ptr = g_textureHandle.ptr + g_cbvDescriptorSize * 1;
+        g_device->CreateShaderResourceView(g_textureBuffer, &shaderResourceViewDesc, g_textureHandle); 
+
+        size_t textureMemorySize = 0;
+        UINT numRows[1];
+        size_t rowSizesInBytes[1];
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts[1];
+        const size_t numSubResources = textureDesc.MipLevels * textureDesc.DepthOrArraySize; 
+        g_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, layouts, numRows, rowSizesInBytes, &textureMemorySize);
+
+        //-----------------------------------------------------------------------------
+        // Upload data to staging buffer
+        //-----------------------------------------------------------------------------
+
+        // Copy the triangle data to the vertex buffer.
+        unsigned char* pDataBegin = nullptr;
+
+        // We do not intend to read from this resource on the CPU.
+        D3D12_RANGE readRange{};
+        readRange.Begin = 0;
+        readRange.End = 0;
+
+        UINT uploadPitch = ( textureDesc.Width*4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+
+        S_D3D12(g_uploadHeap->Map(0, &readRange, (void**)&pDataBegin));
+        
+        {
+            auto pdata = (unsigned char*)image;
+            size_t ppitch = textureDesc.Width*4;
+            for(int i = 0; i <  textureDesc.Height; i++)
+            {
+                memcpy(pDataBegin, pdata, ppitch);
+                pDataBegin+=uploadPitch;
+                pdata+=ppitch;
+            }
+        }
+        //memcpy(pDataBegin, data, texture->size);
+        g_uploadHeap->Unmap(0, nullptr);
+
+        
+        D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+        srcLocation.pResource = g_uploadHeap;
+        srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        srcLocation.PlacedFootprint.Footprint = layouts[0].Footprint;
+
+        D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+        dstLocation.pResource = g_textureBuffer;
+        dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dstLocation.SubresourceIndex = 0;
+        dstLocation.PlacedFootprint.Footprint.Width = textureDesc.Width;
+        dstLocation.PlacedFootprint.Footprint.Height = textureDesc.Height;
+        dstLocation.PlacedFootprint.Footprint.Format = textureDesc.Format;
+        dstLocation.PlacedFootprint.Footprint.RowPitch = textureDesc.Width;
+
+        g_commandList->Reset(g_frameContext[g_frameIndex].commandAllocator, nullptr);
+        g_commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+
+        //-----------------------------------------------------------------------------
+        // layout transition
+        //-----------------------------------------------------------------------------
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = g_textureBuffer;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        g_commandList->ResourceBarrier(1, &barrier);
+
+        g_commandList->Close();
+        g_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_commandList);
+        size_t fenceValue = g_fenceLastSignaledValue + 1;
+        g_commandQueue->Signal(g_fence, fenceValue);
+        g_fenceLastSignaledValue = fenceValue;
+        g_frameContext[g_frameIndex].fenceValue = fenceValue;
+        g_fence->SetEventOnCompletion(fenceValue, g_fenceEvent);
+        ::WaitForSingleObject(g_fenceEvent, INFINITE);   
+    }
+
+    //-----------------------------------------------------------------------------
     // Main loop
     //-----------------------------------------------------------------------------
     bool isRunning = true;
@@ -841,9 +934,16 @@ int main()
         g_commandList->SetGraphicsRootSignature(g_rootSignature);
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle(g_srvDescHeap->GetGPUDescriptorHandleForHeapStart());
-        srvHandle.ptr = srvHandle.ptr + g_cbvDescriptorSize * 0;
-        g_commandList->SetGraphicsRootDescriptorTable(0, srvHandle);  
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE srvHandle(g_srvDescHeap->GetGPUDescriptorHandleForHeapStart());
+            srvHandle.ptr = srvHandle.ptr + g_cbvDescriptorSize * 0;
+            g_commandList->SetGraphicsRootDescriptorTable(0, srvHandle);  
+        }
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE srvHandle(g_srvDescHeap->GetGPUDescriptorHandleForHeapStart());
+            srvHandle.ptr = srvHandle.ptr + g_cbvDescriptorSize * 1;
+            g_commandList->SetGraphicsRootDescriptorTable(1, srvHandle);  
+        }
 
         g_commandList->IASetVertexBuffers(0, 1, &g_vertexBufferView);
         g_commandList->IASetIndexBuffer(&g_indexBufferView);

@@ -1,4 +1,10 @@
 
+// textures
+Texture2D ColorTexture : register(t0);
+
+// samplers
+SamplerState Sampler : register(s0);
+
 // constant buffer
 cbuffer ConstantBuffer : register(b0)
 {
@@ -22,6 +28,5 @@ VS_Output vs_main(float2 pos : Position, float2 TexCoord : TexCoord)
 
 float4 ps_main(VS_Output input) : SV_TARGET
 {
-    //return ColorTexture.Sample(Sampler, input.TexCoord);
-    return float4(1.0, 1.0, 0.0, 1.0);
+    return ColorTexture.Sample(Sampler, input.TexCoord);
 }
