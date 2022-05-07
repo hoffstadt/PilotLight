@@ -7,7 +7,7 @@
 @set PATH=C:\Program Files\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build;%PATH%
 @set PATH=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build;%PATH%
 @set OUT_DIR=out
-@set OUT_BIN=d3d12_example.exe
+@set OUT_BIN=dx12_example.exe
 
 @REM --------------------------------------------------------------------------
 @REM Include paths
