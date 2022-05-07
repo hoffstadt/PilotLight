@@ -1,9 +1,10 @@
-## Pilot Light
+## Pilot Light (WIP)
 
-This repo is a collection of minimal examples for various graphics APIs. The goal of each example is to have a single file that is easy to follow and with minimal abstractions.
+This repo is a collection of minimal examples for various graphics APIs. The goal of each example is to have a single file that is easy to follow and minimal abstractions.
 
 ### Current Graphics APIs
 * Directx 11
+* Directx 12
 
 ## Building
 ### Windows

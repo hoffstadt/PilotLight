@@ -7,7 +7,7 @@
 @set PATH=C:\Program Files\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build;%PATH%
 @set PATH=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build;%PATH%
 @set OUT_DIR=out
-@set OUT_BIN=d3d11_example.exe
+@set OUT_BIN=dx12_example.exe
 
 @REM --------------------------------------------------------------------------
 @REM Include paths
@@ -35,8 +35,9 @@ set CommonCompilerFlags=/D _USE_MATH_DEFINES /D _DEBUG /D MV_DEBUG %CommonCompil
 @REM --------------------------------------------------------------------------
 @REM Linker flags
 @REM --------------------------------------------------------------------------
-set CommonLinkerFlags=/LIBPATH:"%DXSDK_DIR%/Lib/x86" d3d11.lib d3dcompiler.lib
+set CommonLinkerFlags=/LIBPATH:"%DXSDK_DIR%/Lib/x86" d3d12.lib d3dcompiler.lib
 set CommonLinkerFlags=ucrtd.lib gdi32.lib user32.lib %CommonLinkerFlags%
+set CommonLinkerFlags=comctl32.lib Shell32.lib dxguid.lib dxgi.lib %CommonLinkerFlags%
 
 @REM --------------------------------------------------------------------------
 @REM Build
