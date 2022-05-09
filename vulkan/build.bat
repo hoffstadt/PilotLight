@@ -9,6 +9,7 @@
 @set OUT_DIR=out
 @set OUT_BIN=vulkan_example.exe
 
+
 @REM --------------------------------------------------------------------------
 @REM Include paths
 @REM --------------------------------------------------------------------------
@@ -44,6 +45,12 @@ set CommonLinkerFlags=comctl32.lib Shell32.lib %CommonLinkerFlags%
 @REM Build
 @REM --------------------------------------------------------------------------
 cl %CommonCompilerFlags% %INCLUDES% %SOURCES% /Fe%OUT_DIR%/%OUT_BIN% /Fo%OUT_DIR%/ /link %CommonLinkerFlags%
+
+@REM --------------------------------------------------------------------------
+@REM Compile shaders
+@REM --------------------------------------------------------------------------
+%VULKAN_SDK%/bin/glslc -o %OUT_DIR%/simple.frag.spv simple.frag
+%VULKAN_SDK%/bin/glslc -o %OUT_DIR%/simple.vert.spv simple.vert
 
 @REM --------------------------------------------------------------------------
 @REM Cleanup
