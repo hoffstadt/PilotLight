@@ -102,6 +102,15 @@ static VkVertexInputBindingDescription   g_bindingDescriptions[1];
 static VkShaderModule g_vertexShaderModule;
 static VkShaderModule g_pixelShaderModule;
 
+static VkDescriptorSetLayout g_descriptorSetLayout;
+
+static VkImage               g_textureImage;
+static VkDeviceMemory        g_textureImageMemory;
+static VkDescriptorImageInfo g_imageInfo;
+
+static VkDescriptorSet* g_descriptorSets;
+static VkWriteDescriptorSet g_descriptor;
+
 
 //-----------------------------------------------------------------------------
 // Vertex Data and Index Data
@@ -121,7 +130,7 @@ static const unsigned g_indices[] = {
 //-----------------------------------------------------------------------------
 // Image Data
 //-----------------------------------------------------------------------------
-unsigned char image[] = {
+unsigned char g_image[] = {
     255,   0,   0, 255,
       0, 255,   0, 255,
       0,   0, 255, 255,
@@ -142,13 +151,17 @@ static void               create_render_pass();
 static unsigned           find_memory_type(unsigned typeFilter, VkMemoryPropertyFlags properties);
 static void               create_image(unsigned width, unsigned height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
 static char*              read_file(const char* file, unsigned& size, const char* mode);
+static VkCommandBuffer    begin_command_buffer();
+static void               submit_command_buffer(VkCommandBuffer commandBuffer);
+static void               copy_buffer_to_image (VkBuffer srcBuffer, VkImage dstImage, unsigned width, unsigned height, unsigned layers = 1u);
+static void               transition_image_layout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, VkImageSubresourceRange subresourceRange, VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+
 
 int main()
 {
-    //char layerPath[1024];
     char* layerPath = getenv("VK_LAYER_PATH");
     int result = putenv(layerPath);
-    printf(layerPath);
+
     //-----------------------------------------------------------------------------
     // Create and Open Window
     //-----------------------------------------------------------------------------
@@ -245,8 +258,9 @@ int main()
         debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         debugCreateInfo.pfnUserCallback = debugCallback;
         debugCreateInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
-#elif
+#else
         createInfo.enabledLayerCount = 0;
+        createInfo.ppEnabledLayerNames = nullptr;
         createInfo.pNext = VK_NULL_HANDLE;
 #endif
 
@@ -507,6 +521,45 @@ int main()
     g_attributeDescriptions[1].offset = sizeof(float)*2;
 
     //-----------------------------------------------------------------------------
+    // create descriptor set layout
+    //-----------------------------------------------------------------------------
+    {
+        VkDescriptorSetLayout descriptorSetLayouts[1] = {g_descriptorSetLayout};
+        VkDescriptorSetLayoutBinding bindings[1];
+
+        bindings[0].binding = 0u;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[0].pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = bindings;
+
+        MV_VULKAN(vkCreateDescriptorSetLayout(g_logicalDevice, &layoutInfo, nullptr, &g_descriptorSetLayout));
+    }
+
+    //-----------------------------------------------------------------------------
+    // create descriptor set
+    //-----------------------------------------------------------------------------
+    {
+        // allocate descriptor sets
+        g_descriptorSets = (VkDescriptorSet*)malloc(g_minImageCount*sizeof(VkDescriptorSet));
+        auto layouts = (VkDescriptorSetLayout*)malloc(g_minImageCount*sizeof(VkDescriptorSetLayout));
+        for(int i = 0; i < g_minImageCount; i++)
+            layouts[i] = g_descriptorSetLayout;
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = g_descriptorPool;
+        allocInfo.descriptorSetCount = g_minImageCount;
+        allocInfo.pSetLayouts = layouts;
+
+        MV_VULKAN(vkAllocateDescriptorSets(g_logicalDevice, &allocInfo, g_descriptorSets));
+    }
+
+    //-----------------------------------------------------------------------------
     // create pipeline layout
     //-----------------------------------------------------------------------------
     
@@ -517,8 +570,8 @@ int main()
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &g_descriptorSetLayout;
 
     MV_VULKAN(vkCreatePipelineLayout(g_logicalDevice, &pipelineLayoutInfo, nullptr, &g_pipelineLayout));
 
@@ -885,6 +938,130 @@ int main()
     }
 
     //-----------------------------------------------------------------------------
+    // create texture
+    //-----------------------------------------------------------------------------
+    {
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferDeviceMemory;
+        g_imageInfo = VkDescriptorImageInfo{};
+        g_imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        { // create staging buffer
+
+            VkBufferCreateInfo bufferInfo{};
+            bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            bufferInfo.size = sizeof(unsigned char)*16;
+            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            MV_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
+
+            VkMemoryRequirements memRequirements;
+            vkGetBufferMemoryRequirements(g_logicalDevice, stagingBuffer, &memRequirements);
+
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = memRequirements.size;
+            allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+            MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
+            MV_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
+
+            void* mapping;
+            MV_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
+            memcpy(mapping, g_image, bufferInfo.size);
+            vkUnmapMemory(g_logicalDevice, stagingBufferDeviceMemory);
+        }
+
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = 2;
+        imageInfo.extent.height = 2;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.flags = 0;
+        MV_VULKAN(vkCreateImage(g_logicalDevice, &imageInfo, nullptr, &g_textureImage));
+
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(g_logicalDevice, g_textureImage, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_textureImageMemory));
+        MV_VULKAN(vkBindImageMemory(g_logicalDevice, g_textureImage, g_textureImageMemory, 0));
+
+        //-----------------------------------------------------------------------------
+        // final image
+        //-----------------------------------------------------------------------------
+
+        VkImageSubresourceRange subresourceRange = {};
+        subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        subresourceRange.baseMipLevel = 0;
+        subresourceRange.levelCount = imageInfo.mipLevels;
+        subresourceRange.baseArrayLayer = 0;
+        subresourceRange.layerCount = 1;
+
+        VkCommandBuffer commandBuffer = begin_command_buffer();
+        transition_image_layout(commandBuffer, g_textureImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresourceRange);
+        submit_command_buffer(commandBuffer);
+        copy_buffer_to_image(stagingBuffer, g_textureImage, (unsigned)2, (unsigned)2);
+        commandBuffer = begin_command_buffer();
+        transition_image_layout(commandBuffer, g_textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, subresourceRange);
+        submit_command_buffer(commandBuffer);
+        vkDestroyBuffer(g_logicalDevice, stagingBuffer, nullptr);
+        vkFreeMemory(g_logicalDevice, stagingBufferDeviceMemory, nullptr);
+
+        //mvGenerateMipmaps(graphics, texture.textureImage, VK_FORMAT_R8G8B8A8_UNORM, 2, 2, imageInfo.mipLevels);
+
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(g_physicalDevice, &properties);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = g_textureImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = imageInfo.mipLevels;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        MV_VULKAN(vkCreateImageView(g_logicalDevice, &viewInfo, nullptr, &g_imageInfo.imageView));
+
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 1.0f;
+
+        MV_VULKAN(vkCreateSampler(g_logicalDevice, &samplerInfo, nullptr, &g_imageInfo.sampler));
+    }
+
+
+
+    //-----------------------------------------------------------------------------
     // Main loop
     //-----------------------------------------------------------------------------
     bool isRunning = true;
@@ -920,6 +1097,17 @@ int main()
 
         MV_VULKAN(vkBeginCommandBuffer(g_commandBuffers[g_currentImageIndex], &beginInfo));
 
+        VkWriteDescriptorSet descriptorWrites[1];
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[0].dstBinding = 0u;
+        descriptorWrites[0].dstArrayElement = 0;
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[0].descriptorCount = 1;
+        descriptorWrites[0].dstSet = g_descriptorSets[g_currentImageIndex];
+        descriptorWrites[0].pImageInfo = &g_imageInfo; 
+        descriptorWrites[0].pNext = nullptr;
+        vkUpdateDescriptorSets(g_logicalDevice, 1, descriptorWrites, 0, nullptr);
+
         //---------------------------------------------------------------------
         // begin pass
         //---------------------------------------------------------------------
@@ -952,6 +1140,7 @@ int main()
         vkCmdSetScissor(g_commandBuffers[g_currentImageIndex], 0, 1, &scissor);
         vkCmdSetDepthBias(g_commandBuffers[g_currentImageIndex], 0.0f, 0.0f, 0.0f);
         vkCmdBindPipeline(g_commandBuffers[g_currentImageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeline);
+        vkCmdBindDescriptorSets(g_commandBuffers[g_currentImageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipelineLayout, 0, 1, &g_descriptorSets[g_currentImageIndex], 0u, nullptr);
 
         static VkDeviceSize offsets = { 0 };
         VkCommandBuffer commandBuffer = g_commandBuffers[g_currentImageIndex];
@@ -1341,4 +1530,191 @@ read_file(const char* file, unsigned& size, const char* mode)
     fclose(dataFile);
 
     return data;
+}
+
+static VkCommandBuffer
+begin_command_buffer()
+{
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = g_commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(g_logicalDevice, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo); 
+    return commandBuffer; 
+}
+
+static void
+submit_command_buffer(VkCommandBuffer commandBuffer)
+{
+    vkEndCommandBuffer(commandBuffer);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkDeviceWaitIdle(g_logicalDevice);
+    vkFreeCommandBuffers(g_logicalDevice, g_commandPool, 1, &commandBuffer);
+}
+
+static void
+copy_buffer_to_image(VkBuffer srcBuffer, VkImage dstImage, unsigned width, unsigned height, unsigned layers)
+{
+    VkCommandBuffer commandBuffer = begin_command_buffer();
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = layers;
+
+    region.imageOffset = { 0, 0, 0 };
+    region.imageExtent = {
+        width,
+        height,
+        1
+    };
+
+    vkCmdCopyBufferToImage(
+        commandBuffer,
+        srcBuffer,
+        dstImage,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &region
+    );
+
+    submit_command_buffer(commandBuffer);
+}
+
+static void 
+transition_image_layout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, VkImageSubresourceRange subresourceRange, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask)
+{
+    //VkCommandBuffer commandBuffer = mvBeginSingleTimeCommands();
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = subresourceRange;
+
+    // Source layouts (old)
+    // Source access mask controls actions that have to be finished on the old layout
+    // before it will be transitioned to the new layout
+    switch (oldLayout)
+    {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+        // Image layout is undefined (or does not matter)
+        // Only valid as initial layout
+        // No flags required, listed only for completeness
+        barrier.srcAccessMask = 0;
+        break;
+
+    case VK_IMAGE_LAYOUT_PREINITIALIZED:
+        // Image is preinitialized
+        // Only valid as initial layout for linear images, preserves memory contents
+        // Make sure host writes have been finished
+        barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+        // Image is a color attachment
+        // Make sure any writes to the color buffer have been finished
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        // Image is a depth/stencil attachment
+        // Make sure any writes to the depth/stencil buffer have been finished
+        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        // Image is a transfer source
+        // Make sure any reads from the image have been finished
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        // Image is a transfer destination
+        // Make sure any writes to the image have been finished
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        // Image is read by a shader
+        // Make sure any shader reads from the image have been finished
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        break;
+    default:
+        // Other source layouts aren't handled (yet)
+        break;
+    }
+
+    // Target layouts (new)
+    // Destination access mask controls the dependency for the new image layout
+    switch (newLayout)
+    {
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        // Image will be used as a transfer destination
+        // Make sure any writes to the image have been finished
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        // Image will be used as a transfer source
+        // Make sure any reads from the image have been finished
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+        // Image will be used as a color attachment
+        // Make sure any writes to the color buffer have been finished
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        // Image layout will be used as a depth/stencil attachment
+        // Make sure any writes to depth/stencil buffer have been finished
+        barrier.dstAccessMask = barrier.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        break;
+
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        // Image will be read in a shader (sampler, input attachment)
+        // Make sure any writes to the image have been finished
+        if (barrier.srcAccessMask == 0)
+        {
+            barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        }
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        break;
+    default:
+        // Other source layouts aren't handled (yet)
+        break;
+    }
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        srcStageMask, dstStageMask,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+
+    //mvEndSingleTimeCommands(commandBuffer);
 }
