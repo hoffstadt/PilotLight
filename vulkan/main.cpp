@@ -1,19 +1,30 @@
+#ifdef WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define UNICODE
 #include <windows.h>
-#include <assert.h>
+#elif defined(__APPLE__)
+#else // linux
+#include <xcb/xcb.h>
+#include <X11/keysym.h>
+#include <X11/XKBlib.h>  // sudo apt-get install libx11-dev
+#include <X11/Xlib.h>
+#include <X11/Xlib-xcb.h>  // sudo apt-get install libxkbcommon-x11-dev libx11-xcb-dev
+#endif
+
+#include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <set> // temporary
 
-#if defined(_WIN32)
+#if defined(WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
+#elif defined(__APPLE__)
+#else // linux
+#define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
 #include "vulkan/vulkan.h"
-
-#define S_BACKBUFFER_COUNT 2
-#define S_FRAME_COUNT 3
 
 #ifndef MV_ASSERT
 #include <assert.h>
@@ -49,7 +60,17 @@ struct QueueFamilyIndices
 //-----------------------------------------------------------------------------
 // Variables
 //-----------------------------------------------------------------------------
-static HWND           g_hwnd;
+#ifdef WIN32
+static HWND g_hwnd;
+#elif defined(__APPLE__)
+#else // linux
+static Display*          g_display;
+static xcb_connection_t* g_connection;
+static xcb_window_t      g_window;
+static xcb_screen_t*     g_screen;
+static xcb_atom_t        g_wm_protocols;
+static xcb_atom_t        g_wm_delete_win;
+#endif
 static const int      g_width = 1024;
 static const int      g_height = 768;
 static ConstantBuffer g_vertexOffset = { 0.0f, 0.0f };
@@ -67,6 +88,7 @@ static VkDevice                   g_logicalDevice;
 static VkQueue                    g_graphicsQueue;
 static VkQueue                    g_presentQueue;
 static unsigned                   g_minImageCount;
+static unsigned                   g_framesInFlight;
 static VkSwapchainKHR             g_swapChain;
 static VkImage*                   g_swapChainImages;
 static VkImageView*               g_swapChainImageViews;
@@ -80,10 +102,10 @@ static VkImage                    g_depthImage;
 static VkDeviceMemory             g_depthImageMemory;
 static VkImageView                g_depthImageView;
 static VkFramebuffer*             g_swapChainFramebuffers;
-static VkSemaphore                g_imageAvailableSemaphores[S_FRAME_COUNT]; // syncronize rendering to image when already rendering to image
-static VkSemaphore                g_renderFinishedSemaphores[S_FRAME_COUNT]; // syncronize render/present
-static VkFence                    g_inFlightFences[S_FRAME_COUNT];
-static VkFence                    g_imagesInFlight[S_FRAME_COUNT];
+static VkSemaphore*               g_imageAvailableSemaphores; // syncronize rendering to image when already rendering to image
+static VkSemaphore*               g_renderFinishedSemaphores; // syncronize render/present
+static VkFence*                   g_inFlightFences;
+static VkFence*                   g_imagesInFlight;
 static unsigned                   g_currentImageIndex = 0;
 static size_t                     g_currentFrame = 0;
 static VkViewport                 g_viewport;
@@ -140,7 +162,10 @@ unsigned char g_image[] = {
 //-----------------------------------------------------------------------------
 // Windows Procedure
 //-----------------------------------------------------------------------------
+#ifdef WIN32
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+#else
+#endif
 
 static QueueFamilyIndices find_queue_families(VkPhysicalDevice device);
 static void               create_swapchain();
@@ -159,13 +184,16 @@ static void               transition_image_layout(VkCommandBuffer commandBuffer,
 
 int main()
 {
+#ifdef WIN32  
     char* layerPath = getenv("VK_LAYER_PATH");
     int result = putenv(layerPath);
+#endif
 
     //-----------------------------------------------------------------------------
     // Create and Open Window
     //-----------------------------------------------------------------------------
     {
+#ifdef WIN32
         WNDCLASSEXW winClass = {};
         winClass.cbSize = sizeof(WNDCLASSEXW);
         winClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -188,7 +216,7 @@ int main()
 
         g_hwnd = ::CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
             winClass.lpszClassName,
-            L"Directx 11",
+            L"Vulkan",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT, CW_USEDEFAULT,
             initialWidth,
@@ -200,6 +228,120 @@ int main()
             ::MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
             return ::GetLastError();
         }
+#elif defined(__APPLE__)
+#else
+        
+        g_display = XOpenDisplay(nullptr);           // connect to x
+        XAutoRepeatOff(g_display);                   // turn off key repeats  
+        g_connection = XGetXCBConnection(g_display); // retrieve connection from display
+        if(xcb_connection_has_error(g_connection))
+        {
+            assert(false && "Failed to connect to X server via XCB.");
+            return -1;
+        }
+
+        // get data from x server
+        const xcb_setup_t* setup = xcb_get_setup(g_connection);
+
+        // Loop through screens using iterator
+        xcb_screen_iterator_t it = xcb_setup_roots_iterator(setup);
+        int screen_p = 0;
+        for (int s = screen_p; s > 0; s--) 
+        {
+            xcb_screen_next(&it);
+        }
+
+        // After screens have been looped through, assign it.
+        g_screen = it.data;
+
+        // Allocate a XID for the window to be created.
+        g_window = xcb_generate_id(g_connection);
+
+        // Register event types.
+        // XCB_CW_BACK_PIXEL = filling then window bg with a single colour
+        // XCB_CW_EVENT_MASK is required.
+        unsigned int event_mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
+
+        // Listen for keyboard and mouse buttons
+        unsigned int  event_values = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+                        XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE |
+                        XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_POINTER_MOTION |
+                        XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+
+        // Values to be sent over XCB (bg colour, events)
+        unsigned int  value_list[] = {g_screen->black_pixel, event_values};
+
+        // Create the window
+        xcb_create_window(
+            g_connection,
+            XCB_COPY_FROM_PARENT,  // depth
+            g_window,
+            g_screen->root,        // parent
+            200,                              //x
+            200,                              //y
+            g_width,                          //width
+            g_height,                         //height
+            0,                              // No border
+            XCB_WINDOW_CLASS_INPUT_OUTPUT,  //class
+            g_screen->root_visual,
+            event_mask,
+            value_list);
+
+        // Change the title
+        xcb_change_property(
+            g_connection,
+            XCB_PROP_MODE_REPLACE,
+            g_window,
+            XCB_ATOM_WM_NAME,
+            XCB_ATOM_STRING,
+            8,  // data should be viewed 8 bits at a time
+            strlen("Vulkan"),
+            "Vulkan");
+
+        // Tell the server to notify when the window manager
+        // attempts to destroy the window.
+        xcb_intern_atom_cookie_t wm_delete_cookie = xcb_intern_atom(
+            g_connection,
+            0,
+            strlen("WM_DELETE_WINDOW"),
+            "WM_DELETE_WINDOW");
+        xcb_intern_atom_cookie_t wm_protocols_cookie = xcb_intern_atom(
+            g_connection,
+            0,
+            strlen("WM_PROTOCOLS"),
+            "WM_PROTOCOLS");
+        xcb_intern_atom_reply_t* wm_delete_reply = xcb_intern_atom_reply(
+            g_connection,
+            wm_delete_cookie,
+            NULL);
+        xcb_intern_atom_reply_t* wm_protocols_reply = xcb_intern_atom_reply(
+            g_connection,
+            wm_protocols_cookie,
+            NULL);
+        g_wm_delete_win = wm_delete_reply->atom;
+        g_wm_protocols = wm_protocols_reply->atom;
+
+        xcb_change_property(
+            g_connection,
+            XCB_PROP_MODE_REPLACE,
+            g_window,
+            wm_protocols_reply->atom,
+            4,
+            32,
+            1,
+            &wm_delete_reply->atom);
+
+        // Map the window to the screen
+        xcb_map_window(g_connection, g_window);
+
+        // Flush the stream
+        int stream_result = xcb_flush(g_connection);
+        if (stream_result <= 0) 
+        {
+            assert(false && "An error occurred when flusing the stream");
+            return -1;
+        }
+#endif
     }
 
     //-----------------------------------------------------------------------------
@@ -237,7 +379,12 @@ int main()
 
         const char* enabledExtensions[] = { 
             VK_KHR_SURFACE_EXTENSION_NAME,
+#ifdef WIN32
             VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+#elif defined(__APPLE__)
+#else
+            VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+#endif
 #ifdef MV_ENABLE_VALIDATION_LAYERS
             VK_EXT_DEBUG_UTILS_EXTENSION_NAME
 #endif
@@ -289,6 +436,7 @@ int main()
     //-----------------------------------------------------------------------------
     // create surface
     //-----------------------------------------------------------------------------
+#ifdef WIN32
     VkWin32SurfaceCreateInfoKHR surfaceCreateInfo{};
     surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     surfaceCreateInfo.pNext = NULL;
@@ -296,6 +444,17 @@ int main()
     surfaceCreateInfo.hinstance = ::GetModuleHandle(NULL);
     surfaceCreateInfo.hwnd = g_hwnd;
     MV_VULKAN(vkCreateWin32SurfaceKHR(g_instance, &surfaceCreateInfo, nullptr, &g_surface));
+#elif defined(__APPLE__)
+#else
+//vkCreateXlibSurfaceKHR
+    VkXlibSurfaceCreateInfoKHR surfaceCreateInfo{};
+    surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+    surfaceCreateInfo.pNext = NULL;
+    surfaceCreateInfo.flags = 0;
+    surfaceCreateInfo.dpy = g_display;
+    surfaceCreateInfo.window = g_window;
+    vkCreateXlibSurfaceKHR(g_instance, &surfaceCreateInfo, nullptr, &g_surface);
+#endif
 
     //-----------------------------------------------------------------------------
     // create physical device
@@ -311,8 +470,7 @@ int main()
         auto devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice)*deviceCount);
         MV_VULKAN(vkEnumeratePhysicalDevices(g_instance, &deviceCount, devices));
 
-        //for(int i = 0; i < deviceCount; i++)
-        for(int i = 0; i < 1; i++)
+        for(int i = 1; i < 2; i++)
         {
             QueueFamilyIndices indices = find_queue_families(devices[i]);
 
@@ -342,7 +500,7 @@ int main()
 
             vkGetPhysicalDeviceProperties(devices[i], &g_deviceProperties);
 
-            if (extensionsSupported && swapChainAdequate && g_deviceProperties.limits.maxPushConstantsSize >= 256)
+            if (extensionsSupported && swapChainAdequate)
             {
                 g_physicalDevice = devices[0];
                 // TODO: add logic to pick best device (not the last device)
@@ -486,8 +644,10 @@ int main()
     //-----------------------------------------------------------------------------
     // create syncronization primitives
     //-----------------------------------------------------------------------------
-    for(int i = 0; i < S_FRAME_COUNT; i++)
-        g_imagesInFlight[i] = VK_NULL_HANDLE;
+    g_imagesInFlight = (VkFence*)malloc(sizeof(VkFence)*g_minImageCount);
+    g_inFlightFences = (VkFence*)malloc(sizeof(VkFence)*g_minImageCount);
+    g_imageAvailableSemaphores = (VkSemaphore*)malloc(sizeof(VkSemaphore)*g_minImageCount);
+    g_renderFinishedSemaphores = (VkSemaphore*)malloc(sizeof(VkSemaphore)*g_minImageCount);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -496,8 +656,9 @@ int main()
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (unsigned i = 0; i < S_FRAME_COUNT; i++)
+    for (unsigned i = 0; i < g_minImageCount; i++)
     {
+        g_imagesInFlight[i] = VK_NULL_HANDLE;
         MV_VULKAN(vkCreateSemaphore(g_logicalDevice, &semaphoreInfo, nullptr, &g_imageAvailableSemaphores[i]));
         MV_VULKAN(vkCreateSemaphore(g_logicalDevice, &semaphoreInfo, nullptr, &g_renderFinishedSemaphores[i]));
         MV_VULKAN(vkCreateFence(g_logicalDevice, &fenceInfo, nullptr, &g_inFlightFences[i]));
@@ -1068,6 +1229,7 @@ int main()
     while (isRunning)
     {
         // poll for and process events
+#ifdef WIN32
         MSG msg = {};
         while (::PeekMessageW(&msg, 0, 0, 0, PM_REMOVE))
         {
@@ -1076,16 +1238,55 @@ int main()
             ::TranslateMessage(&msg);
             ::DispatchMessageW(&msg);
         }
+#elif defined(__APPLE__)
+#else // linux
+
+        xcb_generic_event_t* event;
+        xcb_client_message_event_t* cm;
+
+        // Poll for events until null is returned.
+        while (event = xcb_poll_for_event(g_connection)) 
+        {
+            switch (event->response_type & ~0x80) 
+            {
+
+                case XCB_KEY_PRESS:
+                case XCB_KEY_RELEASE: 
+                {
+                    xcb_key_press_event_t* kb_event = (xcb_key_press_event_t*)event;
+                    bool pressed = event->response_type == XCB_KEY_PRESS;
+                    xcb_keycode_t code = kb_event->detail;
+                    KeySym key_sym = XkbKeycodeToKeysym(g_display,(KeyCode)code, 0, code & ShiftMask ? 1 : 0);
+                    if(key_sym == XK_W) g_vertexOffset.y_offset += 0.01f;
+                    if(key_sym == XK_S) g_vertexOffset.y_offset -= 0.01f;
+                    if(key_sym == XK_A) g_vertexOffset.x_offset -= 0.01f;
+                    if(key_sym == XK_D) g_vertexOffset.x_offset += 0.01f;
+                    break;
+                }
+
+                case XCB_CLIENT_MESSAGE: 
+                {
+                    cm = (xcb_client_message_event_t*)event;
+
+                    // Window close
+                    if (cm->data.data32[0] == g_wm_delete_win) 
+                    {
+                        isRunning = false;
+                    }
+                    break;
+                } 
+                default: break;
+            }
+            free(event);
+        }
+#endif
 
         //-----------------------------------------------------------------------------
         // begin frame (wait for fences and acquire next image)
         //-----------------------------------------------------------------------------
 
         MV_VULKAN(vkWaitForFences(g_logicalDevice, 1, &g_inFlightFences[g_currentFrame], VK_TRUE, UINT64_MAX));
-
-        MV_VULKAN(vkAcquireNextImageKHR(g_logicalDevice, g_swapChain, UINT64_MAX, g_imageAvailableSemaphores[g_currentFrame],
-            VK_NULL_HANDLE, &g_currentImageIndex));
-
+        MV_VULKAN(vkAcquireNextImageKHR(g_logicalDevice, g_swapChain, UINT64_MAX, g_imageAvailableSemaphores[g_currentFrame],VK_NULL_HANDLE, &g_currentImageIndex));
         if (g_imagesInFlight[g_currentImageIndex] != VK_NULL_HANDLE)
             MV_VULKAN(vkWaitForFences(g_logicalDevice, 1, &g_imagesInFlight[g_currentImageIndex], VK_TRUE, UINT64_MAX));
 
@@ -1183,12 +1384,20 @@ int main()
         presentInfo.pSwapchains = swapChains;
         presentInfo.pImageIndices = &g_currentImageIndex;
         VkResult result = vkQueuePresentKHR(g_presentQueue, &presentInfo);
-        g_currentFrame = (g_currentFrame + 1) % S_FRAME_COUNT;
+        g_currentFrame = (g_currentFrame + 1) % g_framesInFlight;
 
     }
 
+#ifdef WIN32
+#elif defined(__APPLE__)
+#else // linux
+        // Turn key repeats back on since this is global for the OS... just... wow.
+        XAutoRepeatOn(g_display);
+        xcb_destroy_window(g_connection, g_window);
+#endif
 }
 
+#ifdef WIN32
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     LRESULT result = 0;
@@ -1218,6 +1427,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     }
     return result;
 }
+#else
+#endif
 
 static QueueFamilyIndices 
 find_queue_families(VkPhysicalDevice device)
@@ -1330,6 +1541,7 @@ create_swapchain()
         g_minImageCount = swapChainSupport.capabilities.maxImageCount;
 
     {
+        g_framesInFlight = g_minImageCount-1;
         VkSwapchainCreateInfoKHR createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         createInfo.surface = g_surface;
@@ -1513,7 +1725,7 @@ read_file(const char* file, unsigned& size, const char* mode)
     fseek(dataFile, 0, SEEK_SET);
 
     // allocate memory to contain the whole file:
-    char* data = new char[size];
+    char* data = (char*)malloc(sizeof(char)*size);
 
     // copy the file into the buffer:
     size_t result = fread(data, sizeof(char), size, dataFile);
