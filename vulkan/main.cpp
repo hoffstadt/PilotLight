@@ -21,7 +21,6 @@
 //  [ ] Resizing
 //  [ ] Multiple draw calls
 //  [ ] Multiple render targets
-//  [ ] Best Device Selection
 // Important:
 //  - Requires Vulkan SDK and a driver that supports Vulkan 1.2 at least
 
@@ -80,7 +79,7 @@ Index of this file:
 #define MV_VULKAN(x) assert(x == VK_SUCCESS)
 #endif
 
-#define MV_ENABLE_VALIDATION_LAYERS
+//#define MV_ENABLE_VALIDATION_LAYERS
 
 //-----------------------------------------------------------------------------
 // [SECTION] platform specific variables
@@ -100,42 +99,43 @@ static xcb_atom_t        g_wm_delete_win;
 //-----------------------------------------------------------------------------
 // [SECTION] general variables
 //-----------------------------------------------------------------------------
-static const char*                validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
-static const char*                extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-static const int                  g_width = 1024;
-static const int                  g_height = 768;
-static VkInstance                 g_instance;
-static VkSurfaceKHR               g_surface;
-static VkDebugUtilsMessengerEXT   g_debugMessenger;
-static VkPhysicalDeviceProperties g_deviceProperties;
-static VkPhysicalDevice           g_physicalDevice;
-static unsigned                   g_graphicsQueueFamily;
-static VkDevice                   g_logicalDevice;
-static VkQueue                    g_graphicsQueue;
-static VkQueue                    g_presentQueue;
-static unsigned                   g_minImageCount;
-static unsigned                   g_framesInFlight;
-static VkSwapchainKHR             g_swapChain;
-static VkImage*                   g_swapChainImages;
-static VkImageView*               g_swapChainImageViews;
-static VkFormat                   g_swapChainImageFormat;
-static VkExtent2D                 g_swapChainExtent;
-static VkCommandPool              g_commandPool;
-static VkCommandBuffer*           g_commandBuffers;
-static VkDescriptorPool           g_descriptorPool;
-static VkRenderPass               g_renderPass;
-static VkImage                    g_depthImage;
-static VkDeviceMemory             g_depthImageMemory;
-static VkImageView                g_depthImageView;
-static VkFramebuffer*             g_swapChainFramebuffers;
-static VkSemaphore*               g_imageAvailableSemaphores; // syncronize rendering to image when already rendering to image
-static VkSemaphore*               g_renderFinishedSemaphores; // syncronize render/present
-static VkFence*                   g_inFlightFences;
-static VkFence*                   g_imagesInFlight;
-static unsigned                   g_currentImageIndex = 0;
-static size_t                     g_currentFrame = 0;
-static VkViewport                 g_viewport;
-static bool                       g_running=true;
+static const char*                      validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
+static const char*                      extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+static const int                        g_width = 1024;
+static const int                        g_height = 768;
+static VkInstance                       g_instance;
+static VkSurfaceKHR                     g_surface;
+static VkDebugUtilsMessengerEXT         g_debugMessenger;
+static VkPhysicalDeviceProperties       g_deviceProperties;
+static VkPhysicalDeviceMemoryProperties g_memoryProperties;
+static VkPhysicalDevice                 g_physicalDevice;
+static unsigned                         g_graphicsQueueFamily;
+static VkDevice                         g_logicalDevice;
+static VkQueue                          g_graphicsQueue;
+static VkQueue                          g_presentQueue;
+static unsigned                         g_minImageCount;
+static unsigned                         g_framesInFlight;
+static VkSwapchainKHR                   g_swapChain;
+static VkImage*                         g_swapChainImages;
+static VkImageView*                     g_swapChainImageViews;
+static VkFormat                         g_swapChainImageFormat;
+static VkExtent2D                       g_swapChainExtent;
+static VkCommandPool                    g_commandPool;
+static VkCommandBuffer*                 g_commandBuffers;
+static VkDescriptorPool                 g_descriptorPool;
+static VkRenderPass                     g_renderPass;
+static VkImage                          g_depthImage;
+static VkDeviceMemory                   g_depthImageMemory;
+static VkImageView                      g_depthImageView;
+static VkFramebuffer*                   g_swapChainFramebuffers;
+static VkSemaphore*                     g_imageAvailableSemaphores; // syncronize rendering to image when already rendering to image
+static VkSemaphore*                     g_renderFinishedSemaphores; // syncronize render/present
+static VkFence*                         g_inFlightFences;
+static VkFence*                         g_imagesInFlight;
+static unsigned                         g_currentImageIndex = 0;
+static size_t                           g_currentFrame = 0;
+static VkViewport                       g_viewport;
+static bool                             g_running=true;
 
 //-----------------------------------------------------------------------------
 // [SECTION] example specific variables
@@ -879,8 +879,11 @@ create_vulkan_instance()
         VK_EXT_DEBUG_UTILS_EXTENSION_NAME
 #endif
     };
-
+#ifdef MV_ENABLE_VALIDATION_LAYERS
     createInfo.enabledExtensionCount = 3u;
+#else
+    createInfo.enabledExtensionCount = 2u;
+#endif
     createInfo.ppEnabledExtensionNames = enabledExtensions;
 
     // Setup debug messenger for vulkan instance
@@ -957,7 +960,11 @@ select_physical_device()
     auto devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice)*deviceCount);
     MV_VULKAN(vkEnumeratePhysicalDevices(g_instance, &deviceCount, devices));
 
-    for(int i = 1; i < 2; i++)
+    // prefer discrete, then memory size
+    int bestDeviceIndex = 0;
+    bool discreteGPUFound = false;
+    VkDeviceSize maxLocalMemorySize = 0u;
+    for(int i = 0; i < deviceCount; i++)
     {
         QueueFamilyIndices indices = find_queue_families(devices[i]);
 
@@ -985,14 +992,44 @@ select_physical_device()
             //swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
         }
 
-        vkGetPhysicalDeviceProperties(devices[i], &g_deviceProperties);
+        VkPhysicalDeviceProperties deviceProperties;
+        VkPhysicalDeviceMemoryProperties memoryProperties;
+        vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
+        vkGetPhysicalDeviceMemoryProperties(devices[i], &memoryProperties);
 
         if (extensionsSupported && swapChainAdequate)
         {
-            g_physicalDevice = devices[0];
-            // TODO: add logic to pick best device (not the last device)
+            for(int j = 0; j < memoryProperties.memoryHeapCount; j++)
+            {
+                if(memoryProperties.memoryHeaps[j].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT && memoryProperties.memoryHeaps[j].size > maxLocalMemorySize)
+                {
+                    maxLocalMemorySize = memoryProperties.memoryHeaps[j].size;
+                    bestDeviceIndex = i;
+                }
+            }
+
+            if(deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && !discreteGPUFound)
+            {
+                bestDeviceIndex = i;
+                discreteGPUFound = true;
+            }
         }
     }
+
+    g_physicalDevice = devices[bestDeviceIndex];
+    vkGetPhysicalDeviceProperties(devices[bestDeviceIndex], &g_deviceProperties);
+    vkGetPhysicalDeviceMemoryProperties(devices[bestDeviceIndex], &g_memoryProperties);
+    printf("Physical Device Selection\n");
+    printf("-------------------------\n");
+    printf("Device ID: %u\n", g_deviceProperties.deviceID);
+    printf("Vendor ID: %u\n", g_deviceProperties.vendorID);
+    printf("API Version: %u\n", g_deviceProperties.apiVersion);
+    printf("Driver Version: %u\n", g_deviceProperties.driverVersion);
+    static const char* deviceTypeName[] = {"Other", "Integrated", "Discrete", "Virtual", "CPU"};
+    printf("Device Type: %s\n", deviceTypeName[g_deviceProperties.deviceType]);
+    printf("Device Name: %s\n", g_deviceProperties.deviceName);
+    printf("Device Local Memory: %I64u\n", maxLocalMemorySize);
+    
 
     assert(g_physicalDevice != VK_NULL_HANDLE && "failed to find a suitable GPU!");
 }
