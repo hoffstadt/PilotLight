@@ -1,4 +1,4 @@
-// PilotLight, v0.1 WIP
+// PilotLight (Vulkan), v0.1 WIP
 //   * Jonathan Hoffstadt
 
 // Resources:
@@ -18,6 +18,7 @@
 // Missing features:
 //  [ ] Platform: MacOs
 //  [ ] Constant Buffers
+//  [ ] Mipmapping
 //  [ ] Resizing
 //  [ ] Multiple draw calls
 //  [ ] Multiple render targets
@@ -26,6 +27,7 @@
 
 /*
 Index of this file:
+// [SECTION] options
 // [SECTION] header mess
 // [SECTION] platform specific variables
 // [SECTION] general variables
@@ -43,6 +45,11 @@ Index of this file:
 // [SECTION] general per-frame function implementations
 // [SECTION] example per-frame function implementations
 */
+
+//-----------------------------------------------------------------------------
+// [SECTION] options
+//-----------------------------------------------------------------------------
+#define MV_ENABLE_VALIDATION_LAYERS
 
 //-----------------------------------------------------------------------------
 // [SECTION] header mess
@@ -74,12 +81,8 @@ Index of this file:
 #endif
 #include "vulkan/vulkan.h"
 
-#ifndef MV_ASSERT
 #include <assert.h>
-#define MV_VULKAN(x) assert(x == VK_SUCCESS)
-#endif
-
-#define MV_ENABLE_VALIDATION_LAYERS
+#define S_VULKAN(x) assert(x == VK_SUCCESS)
 
 //-----------------------------------------------------------------------------
 // [SECTION] platform specific variables
@@ -99,10 +102,11 @@ static xcb_atom_t        g_wm_delete_win;
 //-----------------------------------------------------------------------------
 // [SECTION] general variables
 //-----------------------------------------------------------------------------
-static const char*                      validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
-static const char*                      extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-static const int                        g_width = 1024;
-static const int                        g_height = 768;
+static const char*                      g_validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
+static const char*                      g_extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+static int                              g_width = 1024;
+static int                              g_height = 768;
+static bool                             g_windowResized = false;
 static VkInstance                       g_instance;
 static VkSurfaceKHR                     g_surface;
 static VkDebugUtilsMessengerEXT         g_debugMessenger;
@@ -274,7 +278,14 @@ int main()
     while (g_running)
     {
         process_events();
-        begin_frame(); // wait for fences and acquire next image
+
+        if(g_windowResized)
+        {
+            // TODO: handle
+            g_windowResized = false;
+        }
+
+        begin_frame();
         begin_recording();
         update_descriptor_sets();
         begin_render_pass();
@@ -312,18 +323,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     LRESULT result = 0;
     switch (msg)
     {
+    case WM_SIZE:
+        if (wparam != SIZE_MINIMIZED)
+        {
+            RECT rect;
+            RECT crect;
+            int awidth = 0;
+            int aheight = 0;
+            int cwidth = 0;
+            int cheight = 0;
+            if (GetWindowRect(g_hwnd, &rect))
+            {
+                awidth = rect.right - rect.left;
+                aheight = rect.bottom - rect.top;
+            }
+
+            if (GetClientRect(g_hwnd, &crect))
+            {
+                cwidth = crect.right - crect.left;
+                cheight = crect.bottom - crect.top;
+            }
+
+            g_width = cwidth;
+            g_height = cheight;
+            g_windowResized = true;
+        }
+        return 0;
     case WM_KEYDOWN:
     {
-        if (wparam == VK_ESCAPE)
-            ::DestroyWindow(hwnd);
-        if (wparam == VK_UP)
-            g_vertexOffset.y_offset += 0.01f;
-        if (wparam == VK_DOWN)
-            g_vertexOffset.y_offset -= 0.01f;
-        if (wparam == VK_LEFT)
-            g_vertexOffset.x_offset -= 0.01f;
-        if (wparam == VK_RIGHT)
-            g_vertexOffset.x_offset += 0.01f;
+        if (wparam == VK_ESCAPE) ::DestroyWindow(hwnd);
+        if (wparam == 'W') g_vertexOffset.y_offset += 0.01f;
+        if (wparam == 'S') g_vertexOffset.y_offset -= 0.01f;
+        if (wparam == 'A') g_vertexOffset.x_offset -= 0.01f;
+        if (wparam == 'D') g_vertexOffset.x_offset += 0.01f;
         break;
     }
     case WM_DESTROY:
@@ -381,7 +413,7 @@ find_queue_families(VkPhysicalDevice device)
             indices.graphicsFamily = i;
 
         VkBool32 presentSupport = false;
-        MV_VULKAN(vkGetPhysicalDeviceSurfaceSupportKHR(device, i, g_surface, &presentSupport));
+        S_VULKAN(vkGetPhysicalDeviceSurfaceSupportKHR(device, i, g_surface, &presentSupport));
 
         if (presentSupport)
             indices.presentFamily = i;
@@ -410,7 +442,7 @@ create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags
     viewInfo.subresourceRange.aspectMask = aspectFlags;
 
     VkImageView imageView;
-    MV_VULKAN(vkCreateImageView(g_logicalDevice, &viewInfo, nullptr, &imageView));
+    S_VULKAN(vkCreateImageView(g_logicalDevice, &viewInfo, nullptr, &imageView));
     return imageView;
 }
 
@@ -433,7 +465,7 @@ create_image(unsigned width, unsigned height, VkFormat format, VkImageTiling til
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.flags = 0; // Optional
 
-    MV_VULKAN(vkCreateImage(g_logicalDevice, &imageInfo, nullptr, &image));
+    S_VULKAN(vkCreateImage(g_logicalDevice, &imageInfo, nullptr, &image));
 
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(g_logicalDevice, image, &memRequirements);
@@ -443,8 +475,8 @@ create_image(unsigned width, unsigned height, VkFormat format, VkImageTiling til
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &imageMemory));
-    MV_VULKAN(vkBindImageMemory(g_logicalDevice, image, imageMemory, 0));
+    S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &imageMemory));
+    S_VULKAN(vkBindImageMemory(g_logicalDevice, image, imageMemory, 0));
 }
 
 static char*
@@ -890,7 +922,7 @@ create_vulkan_instance()
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
 #ifdef MV_ENABLE_VALIDATION_LAYERS
     createInfo.enabledLayerCount = 1u;
-    createInfo.ppEnabledLayerNames = validationLayers;
+    createInfo.ppEnabledLayerNames = g_validationLayers;
     createInfo.pNext = VK_NULL_HANDLE;
 
     debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
@@ -904,7 +936,7 @@ create_vulkan_instance()
     createInfo.pNext = VK_NULL_HANDLE;
 #endif
 
-    MV_VULKAN(vkCreateInstance(&createInfo, nullptr, &g_instance));
+    S_VULKAN(vkCreateInstance(&createInfo, nullptr, &g_instance));
 }
 
 static void
@@ -920,7 +952,7 @@ enable_validation_layers()
 
     auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_instance, "vkCreateDebugUtilsMessengerEXT");
     assert(func != nullptr && "failed to set up debug messenger!");
-    MV_VULKAN(func(g_instance, &createInfo, nullptr, &g_debugMessenger));
+    S_VULKAN(func(g_instance, &createInfo, nullptr, &g_debugMessenger));
 #endif
 }
 
@@ -934,7 +966,7 @@ create_surface()
     surfaceCreateInfo.flags = 0;
     surfaceCreateInfo.hinstance = ::GetModuleHandle(NULL);
     surfaceCreateInfo.hwnd = g_hwnd;
-    MV_VULKAN(vkCreateWin32SurfaceKHR(g_instance, &surfaceCreateInfo, nullptr, &g_surface));
+    S_VULKAN(vkCreateWin32SurfaceKHR(g_instance, &surfaceCreateInfo, nullptr, &g_surface));
 #elif defined(__APPLE__)
 #else
     VkXlibSurfaceCreateInfoKHR surfaceCreateInfo{};
@@ -951,14 +983,14 @@ static void
 select_physical_device()
 {
     unsigned deviceCount = 0u;
-    MV_VULKAN(vkEnumeratePhysicalDevices(g_instance, &deviceCount, nullptr));
+    S_VULKAN(vkEnumeratePhysicalDevices(g_instance, &deviceCount, nullptr));
     assert(deviceCount > 0 && "failed to find GPUs with Vulkan support!");
 
     //-----------------------------------------------------------------------------
     // check if device is suitable
     //-----------------------------------------------------------------------------
     auto devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice)*deviceCount);
-    MV_VULKAN(vkEnumeratePhysicalDevices(g_instance, &deviceCount, devices));
+    S_VULKAN(vkEnumeratePhysicalDevices(g_instance, &deviceCount, devices));
 
     // prefer discrete, then memory size
     int bestDeviceIndex = 0;
@@ -974,10 +1006,10 @@ select_physical_device()
         bool extensionsSupported = false;
         {
             unsigned extensionCount;
-            MV_VULKAN(vkEnumerateDeviceExtensionProperties(devices[i], nullptr, &extensionCount, nullptr));
+            S_VULKAN(vkEnumerateDeviceExtensionProperties(devices[i], nullptr, &extensionCount, nullptr));
 
             auto availableExtensions = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties)*extensionCount);
-            MV_VULKAN(vkEnumerateDeviceExtensionProperties(devices[i], nullptr, &extensionCount, availableExtensions));
+            S_VULKAN(vkEnumerateDeviceExtensionProperties(devices[i], nullptr, &extensionCount, availableExtensions));
 
             // TODO: ensure required extensions are found
             extensionsSupported = true;
@@ -1064,13 +1096,13 @@ create_logical_device()
         createInfo.pQueueCreateInfos = queueCreateInfos;
         createInfo.pEnabledFeatures = &deviceFeatures;
         createInfo.enabledExtensionCount = 1u;
-        createInfo.ppEnabledExtensionNames = extensions;
+        createInfo.ppEnabledExtensionNames = g_extensions;
         createInfo.enabledLayerCount = 0;
 #ifdef MV_ENABLE_VALIDATION_LAYERS
         createInfo.enabledLayerCount = 2u;
-        createInfo.ppEnabledLayerNames = validationLayers;
+        createInfo.ppEnabledLayerNames = g_validationLayers;
 #endif
-        MV_VULKAN(vkCreateDevice(g_physicalDevice, &createInfo, nullptr, &g_logicalDevice));
+        S_VULKAN(vkCreateDevice(g_physicalDevice, &createInfo, nullptr, &g_logicalDevice));
     }
 
     vkGetDeviceQueue(g_logicalDevice, indices.graphicsFamily, 0, &g_graphicsQueue);
@@ -1092,23 +1124,23 @@ create_swapchain()
     // query swapchain support
     //-----------------------------------------------------------------------------
     SwapChainSupportDetails swapChainSupport;
-    MV_VULKAN(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_physicalDevice, g_surface, &swapChainSupport.capabilities));
+    S_VULKAN(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_physicalDevice, g_surface, &swapChainSupport.capabilities));
 
     unsigned formatCount;
-    MV_VULKAN(vkGetPhysicalDeviceSurfaceFormatsKHR(g_physicalDevice, g_surface, &formatCount, nullptr));
+    S_VULKAN(vkGetPhysicalDeviceSurfaceFormatsKHR(g_physicalDevice, g_surface, &formatCount, nullptr));
 
     // todo: put in appropriate spot
     VkBool32 presentSupport = false;
-    MV_VULKAN(vkGetPhysicalDeviceSurfaceSupportKHR(g_physicalDevice, 0, g_surface, &presentSupport));
+    S_VULKAN(vkGetPhysicalDeviceSurfaceSupportKHR(g_physicalDevice, 0, g_surface, &presentSupport));
     assert(formatCount > 0);
     swapChainSupport.formats = (VkSurfaceFormatKHR*)malloc(sizeof(VkSurfaceFormatKHR)*formatCount);
-    MV_VULKAN(vkGetPhysicalDeviceSurfaceFormatsKHR(g_physicalDevice, g_surface, &formatCount, swapChainSupport.formats));
+    S_VULKAN(vkGetPhysicalDeviceSurfaceFormatsKHR(g_physicalDevice, g_surface, &formatCount, swapChainSupport.formats));
 
     unsigned presentModeCount = 0u;
-    MV_VULKAN(vkGetPhysicalDeviceSurfacePresentModesKHR(g_physicalDevice, g_surface, &presentModeCount, nullptr));
+    S_VULKAN(vkGetPhysicalDeviceSurfacePresentModesKHR(g_physicalDevice, g_surface, &presentModeCount, nullptr));
     assert(presentModeCount > 0);
     swapChainSupport.presentModes = (VkPresentModeKHR*)malloc(sizeof(VkPresentModeKHR)*presentModeCount);
-    MV_VULKAN(vkGetPhysicalDeviceSurfacePresentModesKHR(g_physicalDevice, g_surface, &presentModeCount, swapChainSupport.presentModes));
+    S_VULKAN(vkGetPhysicalDeviceSurfacePresentModesKHR(g_physicalDevice, g_surface, &presentModeCount, swapChainSupport.presentModes));
 
     // choose swap surface Format
     VkSurfaceFormatKHR surfaceFormat = swapChainSupport.formats[0];
@@ -1186,7 +1218,7 @@ create_swapchain()
 
         createInfo.oldSwapchain = VK_NULL_HANDLE;
 
-        MV_VULKAN(vkCreateSwapchainKHR(g_logicalDevice, &createInfo, nullptr, &g_swapChain));
+        S_VULKAN(vkCreateSwapchainKHR(g_logicalDevice, &createInfo, nullptr, &g_swapChain));
     }
 
     vkGetSwapchainImagesKHR(g_logicalDevice, g_swapChain, &g_minImageCount, nullptr);
@@ -1213,7 +1245,7 @@ create_command_pool()
     commandPoolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;
     commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
-    MV_VULKAN(vkCreateCommandPool(g_logicalDevice, &commandPoolInfo, nullptr, &g_commandPool));
+    S_VULKAN(vkCreateCommandPool(g_logicalDevice, &commandPoolInfo, nullptr, &g_commandPool));
 }
 
 static void
@@ -1227,7 +1259,7 @@ create_main_command_buffers()
 
     g_commandBuffers = (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer)*g_minImageCount);
 
-    MV_VULKAN(vkAllocateCommandBuffers(g_logicalDevice, &allocInfo, g_commandBuffers));
+    S_VULKAN(vkAllocateCommandBuffers(g_logicalDevice, &allocInfo, g_commandBuffers));
 }
 
 static void
@@ -1254,7 +1286,7 @@ create_descriptor_pool()
     descPoolInfo.poolSizeCount = 11u;
     descPoolInfo.pPoolSizes = poolSizes;
 
-    MV_VULKAN(vkCreateDescriptorPool(g_logicalDevice, &descPoolInfo, nullptr, &g_descriptorPool));
+    S_VULKAN(vkCreateDescriptorPool(g_logicalDevice, &descPoolInfo, nullptr, &g_descriptorPool));
 }
 
 static void 
@@ -1305,7 +1337,7 @@ create_render_pass()
     renderPassInfo.dependencyCount = 0;
     renderPassInfo.pDependencies = VK_NULL_HANDLE;
 
-    MV_VULKAN(vkCreateRenderPass(g_logicalDevice, &renderPassInfo, nullptr, &g_renderPass));
+    S_VULKAN(vkCreateRenderPass(g_logicalDevice, &renderPassInfo, nullptr, &g_renderPass));
 }
 
 static void
@@ -1335,7 +1367,7 @@ create_frame_buffers()
         framebufferInfo.width = g_swapChainExtent.width;
         framebufferInfo.height = g_swapChainExtent.height;
         framebufferInfo.layers = 1;
-        MV_VULKAN(vkCreateFramebuffer(g_logicalDevice, &framebufferInfo, nullptr, &g_swapChainFramebuffers[i]));
+        S_VULKAN(vkCreateFramebuffer(g_logicalDevice, &framebufferInfo, nullptr, &g_swapChainFramebuffers[i]));
     }
 }
 
@@ -1357,9 +1389,9 @@ create_syncronization_primitives()
     for (unsigned i = 0; i < g_minImageCount; i++)
     {
         g_imagesInFlight[i] = VK_NULL_HANDLE;
-        MV_VULKAN(vkCreateSemaphore(g_logicalDevice, &semaphoreInfo, nullptr, &g_imageAvailableSemaphores[i]));
-        MV_VULKAN(vkCreateSemaphore(g_logicalDevice, &semaphoreInfo, nullptr, &g_renderFinishedSemaphores[i]));
-        MV_VULKAN(vkCreateFence(g_logicalDevice, &fenceInfo, nullptr, &g_inFlightFences[i]));
+        S_VULKAN(vkCreateSemaphore(g_logicalDevice, &semaphoreInfo, nullptr, &g_imageAvailableSemaphores[i]));
+        S_VULKAN(vkCreateSemaphore(g_logicalDevice, &semaphoreInfo, nullptr, &g_renderFinishedSemaphores[i]));
+        S_VULKAN(vkCreateFence(g_logicalDevice, &fenceInfo, nullptr, &g_inFlightFences[i]));
     }
 }
 
@@ -1402,7 +1434,7 @@ create_descriptor_set_layout()
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = bindings;
 
-    MV_VULKAN(vkCreateDescriptorSetLayout(g_logicalDevice, &layoutInfo, nullptr, &g_descriptorSetLayout));
+    S_VULKAN(vkCreateDescriptorSetLayout(g_logicalDevice, &layoutInfo, nullptr, &g_descriptorSetLayout));
 }
 
 static void
@@ -1419,7 +1451,7 @@ create_descriptor_set()
     allocInfo.descriptorSetCount = g_minImageCount;
     allocInfo.pSetLayouts = layouts;
 
-    MV_VULKAN(vkAllocateDescriptorSets(g_logicalDevice, &allocInfo, g_descriptorSets));
+    S_VULKAN(vkAllocateDescriptorSets(g_logicalDevice, &allocInfo, g_descriptorSets));
 }
 
 static void
@@ -1435,7 +1467,7 @@ create_pipeline_layout()
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &g_descriptorSetLayout;
 
-    MV_VULKAN(vkCreatePipelineLayout(g_logicalDevice, &pipelineLayoutInfo, nullptr, &g_pipelineLayout));
+    S_VULKAN(vkCreatePipelineLayout(g_logicalDevice, &pipelineLayoutInfo, nullptr, &g_pipelineLayout));
 }
 
 static void
@@ -1610,7 +1642,7 @@ create_pipeline()
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.pDepthStencilState = &depthStencil;
 
-    MV_VULKAN(vkCreateGraphicsPipelines(g_logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_pipeline));
+    S_VULKAN(vkCreateGraphicsPipelines(g_logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_pipeline));
 
     // no longer need these
     vkDestroyShaderModule(g_logicalDevice, g_vertexShaderModule, nullptr);
@@ -1633,7 +1665,7 @@ create_vertex_buffer()
         bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        MV_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
+        S_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
 
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(g_logicalDevice, stagingBuffer, &memRequirements);
@@ -1643,11 +1675,11 @@ create_vertex_buffer()
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
-        MV_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
+        S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
+        S_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
 
         void* mapping;
-        MV_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
+        S_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
         memcpy(mapping, g_vertexData, bufferInfo.size);
         vkUnmapMemory(g_logicalDevice, stagingBufferDeviceMemory);
     }
@@ -1660,7 +1692,7 @@ create_vertex_buffer()
         bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        MV_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &g_vertexBuffer));
+        S_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &g_vertexBuffer));
 
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(g_logicalDevice, g_vertexBuffer, &memRequirements);
@@ -1670,8 +1702,8 @@ create_vertex_buffer()
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_vertexDeviceMemory));
-        MV_VULKAN(vkBindBufferMemory(g_logicalDevice, g_vertexBuffer, g_vertexDeviceMemory, 0));
+        S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_vertexDeviceMemory));
+        S_VULKAN(vkBindBufferMemory(g_logicalDevice, g_vertexBuffer, g_vertexDeviceMemory, 0));
     }
 
     // copy buffer
@@ -1708,7 +1740,7 @@ create_index_buffer()
         bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        MV_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
+        S_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
 
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(g_logicalDevice, stagingBuffer, &memRequirements);
@@ -1718,11 +1750,11 @@ create_index_buffer()
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
-        MV_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
+        S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
+        S_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
 
         void* mapping;
-        MV_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
+        S_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
         memcpy(mapping, g_indices, bufferInfo.size);
         vkUnmapMemory(g_logicalDevice, stagingBufferDeviceMemory);
     }
@@ -1735,7 +1767,7 @@ create_index_buffer()
         bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        MV_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &g_indexBuffer));
+        S_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &g_indexBuffer));
 
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(g_logicalDevice, g_indexBuffer, &memRequirements);
@@ -1745,8 +1777,8 @@ create_index_buffer()
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_indexDeviceMemory));
-        MV_VULKAN(vkBindBufferMemory(g_logicalDevice, g_indexBuffer, g_indexDeviceMemory, 0));
+        S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_indexDeviceMemory));
+        S_VULKAN(vkBindBufferMemory(g_logicalDevice, g_indexBuffer, g_indexDeviceMemory, 0));
     }
 
     // copy buffer
@@ -1785,7 +1817,7 @@ create_texture()
         bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        MV_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
+        S_VULKAN(vkCreateBuffer(g_logicalDevice, &bufferInfo, nullptr, &stagingBuffer));
 
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(g_logicalDevice, stagingBuffer, &memRequirements);
@@ -1795,11 +1827,11 @@ create_texture()
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
-        MV_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
+        S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &stagingBufferDeviceMemory));
+        S_VULKAN(vkBindBufferMemory(g_logicalDevice, stagingBuffer, stagingBufferDeviceMemory, 0));
 
         void* mapping;
-        MV_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
+        S_VULKAN(vkMapMemory(g_logicalDevice, stagingBufferDeviceMemory, 0, bufferInfo.size, 0, &mapping));
         memcpy(mapping, g_image, bufferInfo.size);
         vkUnmapMemory(g_logicalDevice, stagingBufferDeviceMemory);
     }
@@ -1819,7 +1851,7 @@ create_texture()
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.flags = 0;
-    MV_VULKAN(vkCreateImage(g_logicalDevice, &imageInfo, nullptr, &g_textureImage));
+    S_VULKAN(vkCreateImage(g_logicalDevice, &imageInfo, nullptr, &g_textureImage));
 
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(g_logicalDevice, g_textureImage, &memRequirements);
@@ -1828,8 +1860,8 @@ create_texture()
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    MV_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_textureImageMemory));
-    MV_VULKAN(vkBindImageMemory(g_logicalDevice, g_textureImage, g_textureImageMemory, 0));
+    S_VULKAN(vkAllocateMemory(g_logicalDevice, &allocInfo, nullptr, &g_textureImageMemory));
+    S_VULKAN(vkBindImageMemory(g_logicalDevice, g_textureImage, g_textureImageMemory, 0));
 
     //-----------------------------------------------------------------------------
     // final image
@@ -1867,7 +1899,7 @@ create_texture()
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    MV_VULKAN(vkCreateImageView(g_logicalDevice, &viewInfo, nullptr, &g_imageInfo.imageView));
+    S_VULKAN(vkCreateImageView(g_logicalDevice, &viewInfo, nullptr, &g_imageInfo.imageView));
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1887,7 +1919,7 @@ create_texture()
     samplerInfo.minLod = 0.0f;
     samplerInfo.maxLod = 1.0f;
 
-    MV_VULKAN(vkCreateSampler(g_logicalDevice, &samplerInfo, nullptr, &g_imageInfo.sampler));
+    S_VULKAN(vkCreateSampler(g_logicalDevice, &samplerInfo, nullptr, &g_imageInfo.sampler));
 }
 
 static void
@@ -1966,10 +1998,10 @@ cleanup()
 static void
 begin_frame()
 {
-    MV_VULKAN(vkWaitForFences(g_logicalDevice, 1, &g_inFlightFences[g_currentFrame], VK_TRUE, UINT64_MAX));
-    MV_VULKAN(vkAcquireNextImageKHR(g_logicalDevice, g_swapChain, UINT64_MAX, g_imageAvailableSemaphores[g_currentFrame],VK_NULL_HANDLE, &g_currentImageIndex));
+    S_VULKAN(vkWaitForFences(g_logicalDevice, 1, &g_inFlightFences[g_currentFrame], VK_TRUE, UINT64_MAX));
+    S_VULKAN(vkAcquireNextImageKHR(g_logicalDevice, g_swapChain, UINT64_MAX, g_imageAvailableSemaphores[g_currentFrame],VK_NULL_HANDLE, &g_currentImageIndex));
     if (g_imagesInFlight[g_currentImageIndex] != VK_NULL_HANDLE)
-        MV_VULKAN(vkWaitForFences(g_logicalDevice, 1, &g_imagesInFlight[g_currentImageIndex], VK_TRUE, UINT64_MAX));
+        S_VULKAN(vkWaitForFences(g_logicalDevice, 1, &g_imagesInFlight[g_currentImageIndex], VK_TRUE, UINT64_MAX));
 
     // just in case the acquired image is out of order
     g_imagesInFlight[g_currentImageIndex] = g_inFlightFences[g_currentFrame];
@@ -1981,7 +2013,7 @@ begin_recording()
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-    MV_VULKAN(vkBeginCommandBuffer(g_commandBuffers[g_currentImageIndex], &beginInfo));
+    S_VULKAN(vkBeginCommandBuffer(g_commandBuffers[g_currentImageIndex], &beginInfo));
 }
 
 static void
@@ -1995,10 +2027,10 @@ begin_render_pass()
     renderPassInfo.renderArea.extent = g_swapChainExtent;
 
     VkClearValue clearValues[2];
-    clearValues[0].color.float32[0] = 0.0f;
-    clearValues[0].color.float32[1] = 0.0f;
-    clearValues[0].color.float32[2] = 0.0f;
-    clearValues[0].color.float32[3] = 0.0f;
+    clearValues[0].color.float32[0] = 60.0f/255.0f;
+    clearValues[0].color.float32[1] = 60.0f/255.0f;
+    clearValues[0].color.float32[2] = 60.0f/255.0f;
+    clearValues[0].color.float32[3] = 1.0f;
     clearValues[1].depthStencil = { 1.0f, 0 };
     renderPassInfo.clearValueCount = 2;
     renderPassInfo.pClearValues = clearValues;
@@ -2030,7 +2062,7 @@ end_render_pass()
 static void
 end_recording()
 {
-    MV_VULKAN(vkEndCommandBuffer(g_commandBuffers[g_currentImageIndex]));
+    S_VULKAN(vkEndCommandBuffer(g_commandBuffers[g_currentImageIndex]));
 }
 
 static void
@@ -2050,8 +2082,8 @@ submit_command_buffers_then_present()
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    MV_VULKAN(vkResetFences(g_logicalDevice, 1, &g_inFlightFences[g_currentFrame]));
-    MV_VULKAN(vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFences[g_currentFrame]));   
+    S_VULKAN(vkResetFences(g_logicalDevice, 1, &g_inFlightFences[g_currentFrame]));
+    S_VULKAN(vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFences[g_currentFrame]));   
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
