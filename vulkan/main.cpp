@@ -79,7 +79,7 @@ Index of this file:
 #define MV_VULKAN(x) assert(x == VK_SUCCESS)
 #endif
 
-//#define MV_ENABLE_VALIDATION_LAYERS
+#define MV_ENABLE_VALIDATION_LAYERS
 
 //-----------------------------------------------------------------------------
 // [SECTION] platform specific variables
