@@ -1968,7 +1968,7 @@ process_events()
                 // Window close
                 if (cm->data.data32[0] == g_wm_delete_win) 
                 {
-                    isRunning = false;
+                    g_running = false;
                 }
                 break;
             } 
